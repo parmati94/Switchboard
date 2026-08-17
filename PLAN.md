@@ -106,8 +106,17 @@ strategy and absurd in a chat.
 So **`voice` decides whether it reads like a conversation at all**, and `casual`
 has to *relax the etiquette rules* rather than merely add adjectives — no amount
 of tone guidance produces banter while "never acknowledge anything" stands.
-`length` only decides how much of it there is, and `naming` is separate again
-because the two do not track.
+
+Then the same mistake happened again, in the other direction. Asked for banter,
+`casual` grew "rib them", "pile on", "fair game", "silence is not a shield" —
+four aggressive verbs and not one word about warmth, agreement or curiosity. It
+became a register that only knew one move, and next to "only speak when adding
+information" it effectively said *only speak when you have a hit to land*.
+
+So temperament is its own axis. **`edge`** decides how they treat each other,
+`voice` only how they talk. Otherwise aggression is reachable only by going
+casual, and a casual room cannot be anything but savage. `length` and `naming`
+are separate again for the same reason: none of these four track each other.
 
 Guidance is advisory and shapes tone; `max_chars` is a hard cap that catches
 drift. Guidance alone is ignored under pressure; a cap alone can only truncate,

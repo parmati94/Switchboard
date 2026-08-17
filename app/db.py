@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -57,6 +57,39 @@ NAMING_PRESETS = {
 }
 DEFAULT_NAMING = "human"
 
+# How they treat each other, which is not the same thing as how they talk.
+# Conflating the two meant aggression was only reachable by going casual, and a
+# casual room could not be anything but savage.
+EDGE_PRESETS = {
+    "warm": (
+        "Be generous with each other. Build on what someone said rather than "
+        "looking for the flaw in it, agree out loud when you agree, and get "
+        "interested in the topic rather than in scoring. Tease lightly if at all."
+    ),
+    "dry": (
+        "Matter-of-fact with a light touch. Disagree plainly when you disagree, "
+        "but you are not here to land hits. Wit is welcome; needling is not."
+    ),
+    "sharp": (
+        "Disagree bluntly and tease freely. Call out weak reasoning, including a "
+        "human's. Keep it aimed at the argument rather than the person, and let a "
+        "good point stand when someone makes one."
+    ),
+    "savage": (
+        "Rib everyone, pile on when it is funny, and treat silence as no "
+        "protection — anyone in the channel is fair game whether or not they have "
+        "spoken. "
+        "But ribbing is seasoning, not the meal. Vary it: agree when someone is "
+        "right, get genuinely interested when a topic deserves it, and let a good "
+        "line from someone else land without immediately topping it. Relentless "
+        "attack is exactly as one-note as relentless analysis, and the funniest "
+        "person in a group chat is never the one swinging at everything. "
+        "Two things stay off regardless: slurs, and being genuinely nasty about "
+        "someone who is not here to answer back."
+    ),
+}
+DEFAULT_EDGE = "dry"
+
 # Style has two independent axes. Length alone was not enough: capping characters
 # made agents terse without making them human, so a casual question came back
 # answered like a consulting deck. Voice is the axis that fixes that, and it has
@@ -69,13 +102,8 @@ VOICE_PRESETS = {
             "opinions, humour, blunt disagreement. No headings, no bullet lists, no "
             "hedging, no 'the distinction is structural rather than X'. Say the thing. "
             "Reacting to what someone said with a short agreement or a joke is fine "
-            "here — banter is the point, not noise. Rib the other agents and the "
-            "humans, and pile on when it is funny. "
-            "Everyone in this channel is fair game, including a human who is reading "
-            "quietly and has not said a word — silence is not a shield, and you do "
-            "not need someone to speak first before you can take a shot at them. "
-            "Two things only are off: slurs, and being genuinely nasty about someone "
-            "who is not here at all, since they cannot answer back."
+            "here — banter is the point, not noise, and you do not have to be adding "
+            "new information to be worth reading."
         ),
         "naming_hint": (
             "Pick a name a person might use in a group chat — short and a bit of "
@@ -166,6 +194,7 @@ CREATE TABLE IF NOT EXISTS buses (
     style_preset   TEXT    NOT NULL DEFAULT 'normal',
     style_voice    TEXT    NOT NULL DEFAULT 'neutral',
     style_naming   TEXT,
+    style_edge     TEXT,
     style_max_chars INTEGER,
     style_guidance TEXT
 );
@@ -317,9 +346,13 @@ def _style_for(row: aiosqlite.Row) -> dict:
     length_base = STYLE_PRESETS.get(length, STYLE_PRESETS[DEFAULT_STYLE])
     voice_base = VOICE_PRESETS.get(voice, VOICE_PRESETS[DEFAULT_VOICE])
 
-    # Voice leads, because it is the axis that decides whether this reads like a
-    # conversation at all. Length only shapes how much of it there is.
-    parts = [voice_base["guidance"], length_base["guidance"]]
+    edge = row["style_edge"] or DEFAULT_EDGE
+    edge_guidance = EDGE_PRESETS.get(edge, EDGE_PRESETS[DEFAULT_EDGE])
+
+    # Voice leads, because it decides whether this reads like a conversation at
+    # all. Edge decides how they treat each other. Length only shapes how much of
+    # it there is.
+    parts = [voice_base["guidance"], edge_guidance, length_base["guidance"]]
     if row["style_guidance"]:
         parts.append(row["style_guidance"])
 
@@ -327,6 +360,7 @@ def _style_for(row: aiosqlite.Row) -> dict:
     return {
         "length": length,
         "voice": voice,
+        "edge": edge,
         "naming": naming,
         "max_chars": row["style_max_chars"] or length_base["max_chars"],
         "guidance": " ".join(parts),
@@ -385,6 +419,7 @@ class Database:
             ("style_guidance", "TEXT"),
             ("mentions_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("style_naming", "TEXT"),
+            ("style_edge", "TEXT"),
             ("limit_agent_turns", "INTEGER NOT NULL DEFAULT 6"),
             ("history_from_seq", "INTEGER NOT NULL DEFAULT 0"),
         ):
@@ -513,14 +548,15 @@ class Database:
         length: str,
         voice: str,
         naming: str | None = None,
+        edge: str | None = None,
         max_chars: int | None = None,
         guidance: str | None = None,
     ) -> None:
         assert self._conn
         await self._conn.execute(
             "UPDATE buses SET style_preset = ?, style_voice = ?, style_naming = ?, "
-            "style_max_chars = ?, style_guidance = ? WHERE bus_id = ?",
-            (length, voice, naming, max_chars, guidance, bus_id),
+            "style_edge = ?, style_max_chars = ?, style_guidance = ? WHERE bus_id = ?",
+            (length, voice, naming, edge, max_chars, guidance, bus_id),
         )
         await self._conn.commit()
 

@@ -222,7 +222,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         embed.add_field(
             name="Style",
-            value=(f"**{style['voice']}** · {style['length']}\n"
+            value=(f"**{style['voice']}** · {style['edge']}\n{style['length']}, "
                    f"{style['max_chars']} char cap"),
             inline=True,
         )
@@ -512,7 +512,8 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
     @group.command(name="style", description="Set how agents write on this bus")
     @app_commands.describe(
-        voice="How they sound. This is the one that stops them talking like analysts.",
+        voice="How they sound — the register, not the attitude.",
+        edge="How they treat each other. Separate from voice on purpose.",
         length="How much they write.",
         naming="What they call themselves.",
         max_chars="Optional hard cap override (100-1900)",
@@ -529,18 +530,25 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             app_commands.Choice(name="normal — a short paragraph", value="normal"),
             app_commands.Choice(name="detailed — thorough", value="detailed"),
         ],
+        edge=[
+            app_commands.Choice(name="warm — generous, builds on points", value="warm"),
+            app_commands.Choice(name="dry — plain, light wit, no needling", value="dry"),
+            app_commands.Choice(name="sharp — blunt, teases, calls out weak reasoning",
+                                value="sharp"),
+            app_commands.Choice(name="savage — piles on, nobody is safe", value="savage"),
+        ],
         naming=[
-            app_commands.Choice(name="human — Marlow, Quill, Pike", value="human"),
+            app_commands.Choice(name="human — short, a bit of character", value="human"),
             app_commands.Choice(name="descriptive — schema-critic, perf-analyst",
                                 value="descriptive"),
-            app_commands.Choice(name="playful — WaffleIron9000", value="playful"),
-            app_commands.Choice(name="crude — FuckFace007 (profanity, no slurs)",
-                                value="crude"),
+            app_commands.Choice(name="playful — absurd and memorable", value="playful"),
+            app_commands.Choice(name="crude — profanity welcome, no slurs", value="crude"),
         ],
     )
     async def style(
         interaction: discord.Interaction,
         voice: app_commands.Choice[str],
+        edge: app_commands.Choice[str] | None = None,
         length: app_commands.Choice[str] | None = None,
         naming: app_commands.Choice[str] | None = None,
         max_chars: app_commands.Range[int, 100, 1900] | None = None,
@@ -554,8 +562,10 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
         chosen_length = length.value if length else bus["style"]["length"]
         chosen_naming = naming.value if naming else bus["style"]["naming"]
+        chosen_edge = edge.value if edge else bus["style"]["edge"]
         await db.set_bus_style(
-            bus["bus_id"], chosen_length, voice.value, chosen_naming, max_chars, guidance
+            bus["bus_id"], chosen_length, voice.value, chosen_naming, chosen_edge,
+            max_chars, guidance,
         )
         effective = (await db.bus_for_channel(str(interaction.channel_id)))["style"]
 
@@ -564,7 +574,10 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             description=f"`{bus['bus_id']}` · #{bus['channel_name']}",
             colour=COLOUR_GREEN,
         )
-        embed.add_field(name="Voice", value=f"**{voice.value}**", inline=True)
+        embed.add_field(name="Voice", value=f"**{voice.value}**\n-# how they talk",
+                        inline=True)
+        embed.add_field(name="Edge", value=f"**{chosen_edge}**\n-# how they treat people",
+                        inline=True)
         embed.add_field(name="Length",
                         value=f"**{chosen_length}**\n{effective['max_chars']} char cap",
                         inline=True)
