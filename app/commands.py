@@ -26,6 +26,15 @@ log = logging.getLogger("switchboard.commands")
 # is one click rather than a name you have to know.
 ALL_AGENTS = "*"
 
+# Reused from the project's palette so embeds match the bot's own artwork.
+COLOUR_GREEN = 0x2F6B4F
+COLOUR_BRASS = 0xB8801F
+COLOUR_RED = 0xA83A2E
+
+
+def _tick(ok) -> str:
+    return "✅" if ok else "❌"
+
 
 def _no_bus_message() -> str:
     return (
@@ -120,7 +129,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             f"**Bus enabled** in {channel.mention} — `{bus['bus_id']}`\n\n"
             "Give an agent this one line and it will onboard itself:\n"
             f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
-            "Read the root path first.\n```\n"
+            "Read the root path first, sending the secret as an Authorization: Bearer header.\n```\n"
             "This secret is shown **once**. `/switchboard rotate` issues a new one.",
             ephemeral=True,
         )
@@ -150,33 +159,92 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             return
 
         stats = await db.bus_stats(bus["bus_id"])
-        state = "enabled" if bus["enabled"] else "disabled"
-        speaks = "yes" if bus["webhook_url"] else "no — missing Manage Webhooks"
+        agents = await db.roster(bus["bus_id"])
+        convos = await db.conversation_counts(bus["bus_id"])
+        style = bus["style"]
 
-        # Reading is the failure mode that hides: posting still works without it.
-        listens = "unknown"
+        can_speak = bool(bus["webhook_url"])
+
+        # Reading is the failure mode that hides: posting still works without it,
+        # so a bus can look healthy while recording nothing.
+        can_listen = None
         me = interaction.guild.me if interaction.guild else None
         if me is not None and isinstance(interaction.channel, discord.TextChannel):
             perms = interaction.channel.permissions_for(me)
-            if perms.view_channel and perms.read_message_history:
-                listens = "yes"
-            else:
-                listens = "**NO** — I cannot see this channel; nothing is being recorded"
+            can_listen = perms.view_channel and perms.read_message_history
 
-        await interaction.followup.send(
-            f"**Bus `{bus['bus_id']}`** — {state}\n"
-            f"Channel: <#{bus['channel_id']}>\n"
-            f"Can speak: {speaks}\n"
-            f"Can listen: {listens}\n"
-            f"Agents: {len(await db.roster(bus['bus_id']))}\n"
-            f"Messages recorded: {stats['messages_stored']}\n"
-            f"Cursor head: {stats['head_seq']}\n"
-            f"Limits: {bus['limit_turns']} turns / {bus['limit_minutes']} min\n"
-            f"Style: {bus['style']['voice']} / {bus['style']['length']} "
-            f"(max {bus['style']['max_chars']} chars)\n"
-            f"Mentions: {'allowed' if bus['mentions_enabled'] else 'blocked'}",
-            ephemeral=True,
+        healthy = bus["enabled"] and can_speak and can_listen is not False
+        colour = COLOUR_GREEN if healthy else (
+            COLOUR_RED if not bus["enabled"] or can_listen is False else COLOUR_BRASS
         )
+
+        embed = discord.Embed(
+            title=f"#{bus['channel_name']}",
+            description=(
+                f"`{bus['bus_id']}` · "
+                + ("**enabled**" if bus["enabled"] else "**disabled**")
+                + ("" if healthy else "  ⚠️ needs attention")
+            ),
+            colour=colour,
+        )
+
+        embed.add_field(
+            name="Capability",
+            value=(
+                f"{_tick(can_speak)} Speak\n"
+                + (f"{_tick(can_listen)} Listen" if can_listen is not None
+                   else "❔ Listen")
+                + ("" if can_speak else "\n-# needs Manage Webhooks")
+                + ("" if can_listen is not False
+                   else "\n-# **cannot see this channel — nothing is recorded**")
+            ),
+            inline=True,
+        )
+        online = sum(1 for a in agents if a["online"])
+        embed.add_field(
+            name="Agents",
+            value=(f"**{len(agents)}** registered\n{online} active"
+                   if agents else "none yet\n-# share the secret"),
+            inline=True,
+        )
+        embed.add_field(
+            name="Traffic",
+            value=f"**{stats['messages_stored']}** messages\ncursor at {stats['head_seq']}",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Conversations",
+            value=(f"**{convos['open']}** open · {convos['total']} total\n"
+                   f"close at {bus['limit_turns']} turns or {bus['limit_minutes']} min"),
+            inline=True,
+        )
+        embed.add_field(
+            name="Style",
+            value=(f"**{style['voice']}** · {style['length']}\n"
+                   f"{style['max_chars']} char cap"),
+            inline=True,
+        )
+        embed.add_field(
+            name="Mentions",
+            value=("**allowed**\n-# starter + who they @"
+                   if bus["mentions_enabled"] else "**blocked**\n-# nobody is notified"),
+            inline=True,
+        )
+
+        if agents:
+            embed.add_field(
+                name="Roster",
+                value="\n".join(
+                    f"{'🟢' if a['online'] else '⚪'} `{a['position']}` **{a['id']}**"
+                    + ("" if a["own_webhook"] else "  -# shared webhook")
+                    for a in agents[:10]
+                ) + (f"\n-# …and {len(agents) - 10} more" if len(agents) > 10 else ""),
+                inline=False,
+            )
+
+        embed.set_footer(text="🟢 seen in the last 2 minutes")
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @group.command(name="rotate", description="Issue a new bootstrap secret")
     @app_commands.describe(
@@ -209,7 +277,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             f"**New bootstrap secret** for `{bus['bus_id']}`. The previous one no "
             "longer works, so anything using it must be given this:\n"
             f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
-            "Read the root path first.\n```"
+            "Read the root path first, sending the secret as an Authorization: Bearer header.\n```"
             + cleared
             + ("\n\nExisting agents keep their own keys and are unaffected — pass "
                "`clear_agents: True` if you wanted a full reset." if not clear_agents else ""),
@@ -235,23 +303,30 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             return
 
         now = time.time()
-        lines = []
-        for a in agents:
-            dot = "🟢" if a["online"] else "⚪"
+        stale = sum(1 for a in agents if not a["online"])
+        embed = discord.Embed(
+            title=f"Agents on #{bus['channel_name']}",
+            description=f"`{bus['bus_id']}` · **{len(agents)}** registered, "
+                        f"{len(agents) - stale} active",
+            colour=COLOUR_GREEN if not stale else COLOUR_BRASS,
+        )
+        for a in agents[:24]:
             if a["last_seen"]:
                 age = now - a["last_seen"]
                 seen = f"{age:.0f}s ago" if age < 90 else f"{age / 60:.0f}m ago"
             else:
                 seen = "never"
-            lines.append(f"{dot} **{a['id']}** — last seen {seen}")
-        stale = sum(1 for a in agents if not a["online"])
-        await interaction.followup.send(
-            f"**{len(agents)} agent(s)** on `{bus['bus_id']}`\n" + "\n".join(lines)
-            + "\n\n🟢 = seen in the last 2 minutes."
-            + (f"\n{stale} look gone — `/switchboard revoke` and pick **all agents** "
-               "to clear them out." if stale else ""),
-            ephemeral=True,
+            embed.add_field(
+                name=f"{'🟢' if a['online'] else '⚪'} {a['position']}. {a['id']}",
+                value=f"last seen {seen}\n"
+                      + ("own webhook" if a["own_webhook"] else "shared webhook"),
+                inline=True,
+            )
+        embed.set_footer(
+            text="🟢 seen in the last 2 minutes · position is join order"
+            + (f" · {stale} look gone — revoke → all agents to clear" if stale else "")
         )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _cleanup_webhooks(rows: list[dict]) -> int:
         deleted = 0
@@ -381,6 +456,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
     @app_commands.describe(
         voice="How they sound. This is the one that stops them talking like analysts.",
         length="How much they write.",
+        naming="What they call themselves.",
         max_chars="Optional hard cap override (100-1900)",
         guidance="Optional extra instruction, e.g. 'no jargon, assume no context'",
     )
@@ -395,11 +471,20 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             app_commands.Choice(name="normal — a short paragraph", value="normal"),
             app_commands.Choice(name="detailed — thorough", value="detailed"),
         ],
+        naming=[
+            app_commands.Choice(name="human — Marlow, Quill, Pike", value="human"),
+            app_commands.Choice(name="descriptive — schema-critic, perf-analyst",
+                                value="descriptive"),
+            app_commands.Choice(name="playful — WaffleIron9000", value="playful"),
+            app_commands.Choice(name="crude — FuckFace007 (profanity, no slurs)",
+                                value="crude"),
+        ],
     )
     async def style(
         interaction: discord.Interaction,
         voice: app_commands.Choice[str],
         length: app_commands.Choice[str] | None = None,
+        naming: app_commands.Choice[str] | None = None,
         max_chars: app_commands.Range[int, 100, 1900] | None = None,
         guidance: str | None = None,
     ) -> None:
@@ -410,28 +495,38 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             return
 
         chosen_length = length.value if length else bus["style"]["length"]
+        chosen_naming = naming.value if naming else bus["style"]["naming"]
         await db.set_bus_style(
-            bus["bus_id"], chosen_length, voice.value, max_chars, guidance
+            bus["bus_id"], chosen_length, voice.value, chosen_naming, max_chars, guidance
         )
         effective = (await db.bus_for_channel(str(interaction.channel_id)))["style"]
 
-        note = ""
-        if effective["relaxed_etiquette"]:
-            note = (
-                "\nEtiquette is relaxed on casual: short agreements and jokes are "
-                "allowed, since forbidding them is what made conversation impossible."
-            )
-
-        await interaction.followup.send(
-            f"Style on `{bus['bus_id']}`: **{voice.value}** voice, "
-            f"**{chosen_length}** length, {effective['max_chars']} char cap.\n"
-            f"> {effective['guidance']}"
-            + note
-            + "\n\nAgents get this at registration and again on every poll, so it "
-            "applies immediately — including to ones already running. You don't "
-            "need to tell them anything.",
-            ephemeral=True,
+        embed = discord.Embed(
+            title="Style updated",
+            description=f"`{bus['bus_id']}` · #{bus['channel_name']}",
+            colour=COLOUR_GREEN,
         )
+        embed.add_field(name="Voice", value=f"**{voice.value}**", inline=True)
+        embed.add_field(name="Length",
+                        value=f"**{chosen_length}**\n{effective['max_chars']} char cap",
+                        inline=True)
+        embed.add_field(name="Naming", value=f"**{chosen_naming}**", inline=True)
+        embed.add_field(name="What agents are told",
+                        value=effective["guidance"][:1020], inline=False)
+        embed.add_field(name="…and about names",
+                        value=effective["naming_hint"][:1020], inline=False)
+        if effective["relaxed_etiquette"]:
+            embed.add_field(
+                name="Etiquette relaxed",
+                value="Short agreements and jokes are allowed on casual — forbidding "
+                      "them is what made conversation impossible.",
+                inline=False,
+            )
+        embed.set_footer(
+            text="Applies immediately, including to agents already running. "
+                 "Naming affects agents that join from now on."
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     tree.add_command(group)
     return tree

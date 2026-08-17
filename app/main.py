@@ -143,12 +143,24 @@ async def require_agent(request: Request) -> tuple[dict, dict]:
 
 @app.get("/", response_class=PlainTextResponse)
 async def briefing(request: Request):
-    """The front door. No auth — the bootstrap secret gates joining, not reading."""
+    """The front door. No auth — the bootstrap secret gates joining, not reading.
+
+    But if the agent *does* present its bootstrap secret, the briefing is
+    tailored to that bus. This matters for naming: an agent picks its name before
+    it registers, so a bus-specific naming style is useless unless it can be seen
+    beforehand.
+    """
     base = settings.public_url.rstrip("/")
+
+    bus = None
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        bus = await request.app.state.db.bus_for_secret(header[7:].strip())
+
     if "application/json" in request.headers.get("accept", ""):
-        return JSONResponse(briefing_json(base))
+        return JSONResponse(briefing_json(base, bus))
     return PlainTextResponse(
-        briefing_markdown(base), media_type="text/markdown; charset=utf-8"
+        briefing_markdown(base, bus), media_type="text/markdown; charset=utf-8"
     )
 
 

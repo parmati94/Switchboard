@@ -25,7 +25,33 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
+
+# What agents should call themselves. Separate from voice because the two don't
+# always track: a casual room might still want descriptive names, and a working
+# one might not.
+NAMING_PRESETS = {
+    "descriptive": (
+        "Pick a name describing your particular role or angle — schema-critic, "
+        "perf-analyst, devils-advocate."
+    ),
+    "human": (
+        "Pick a name a person might actually use in a group chat: short, a little "
+        "character, not a job title. Marlow, Quill, Pike."
+    ),
+    "playful": (
+        "Pick an absurd, memorable handle — CaptainSpreadsheet, WaffleIron9000, "
+        "TheBeanCounter. Silly is the point. Keep it clean."
+    ),
+    "crude": (
+        "Pick a crude, juvenile, off-colour handle — the kind of thing people used "
+        "on gaming forums in 2004. FuckFace007, ButtSoup, DongleWizard. Profanity "
+        "and innuendo are welcome and the ruder the funnier. "
+        "Two hard limits: no slurs of any kind, and nothing aimed at a real person. "
+        "Vulgar is the point; abusive is not."
+    ),
+}
+DEFAULT_NAMING = "human"
 
 # Style has two independent axes. Length alone was not enough: capping characters
 # made agents terse without making them human, so a casual question came back
@@ -123,6 +149,7 @@ CREATE TABLE IF NOT EXISTS buses (
     -- the human never has to relay it.
     style_preset   TEXT    NOT NULL DEFAULT 'normal',
     style_voice    TEXT    NOT NULL DEFAULT 'neutral',
+    style_naming   TEXT,
     style_max_chars INTEGER,
     style_guidance TEXT
 );
@@ -273,12 +300,14 @@ def _style_for(row: aiosqlite.Row) -> dict:
     if row["style_guidance"]:
         parts.append(row["style_guidance"])
 
+    naming = row["style_naming"] or DEFAULT_NAMING
     return {
         "length": length,
         "voice": voice,
+        "naming": naming,
         "max_chars": row["style_max_chars"] or length_base["max_chars"],
         "guidance": " ".join(parts),
-        "naming_hint": voice_base["naming_hint"],
+        "naming_hint": NAMING_PRESETS.get(naming, NAMING_PRESETS[DEFAULT_NAMING]),
         "relaxed_etiquette": voice_base["relaxes_etiquette"],
     }
 
@@ -332,6 +361,7 @@ class Database:
             ("style_max_chars", "INTEGER"),
             ("style_guidance", "TEXT"),
             ("mentions_enabled", "INTEGER NOT NULL DEFAULT 1"),
+            ("style_naming", "TEXT"),
         ):
             if column not in bus_cols:
                 log.info("migrating buses: adding %s", column)
@@ -444,14 +474,15 @@ class Database:
         bus_id: str,
         length: str,
         voice: str,
+        naming: str | None = None,
         max_chars: int | None = None,
         guidance: str | None = None,
     ) -> None:
         assert self._conn
         await self._conn.execute(
-            "UPDATE buses SET style_preset = ?, style_voice = ?, style_max_chars = ?, "
-            "style_guidance = ? WHERE bus_id = ?",
-            (length, voice, max_chars, guidance, bus_id),
+            "UPDATE buses SET style_preset = ?, style_voice = ?, style_naming = ?, "
+            "style_max_chars = ?, style_guidance = ? WHERE bus_id = ?",
+            (length, voice, naming, max_chars, guidance, bus_id),
         )
         await self._conn.commit()
 
@@ -507,6 +538,17 @@ class Database:
             (time.time(), reason, conversation_id),
         )
         await self._conn.commit()
+
+    async def conversation_counts(self, bus_id: str) -> dict:
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN closed_at IS NULL THEN 1 ELSE 0 END) AS open "
+            "FROM conversations WHERE bus_id = ?",
+            (bus_id,),
+        ) as cur:
+            row = await cur.fetchone()
+            return {"total": row["total"] or 0, "open": row["open"] or 0}
 
     async def agent_turns_used(self, bus_id: str, conversation_id: str) -> int:
         """Only agent messages consume budget.

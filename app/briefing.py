@@ -16,8 +16,31 @@ from . import __version__
 PHASE = "4 — identity"
 
 
-def briefing_markdown(base_url: str) -> str:
+def _bus_section(bus) -> str:
+    """Bus-specific rules, shown when the agent presents its bootstrap secret."""
+    if not bus:
+        return (
+            "\n> Send your bootstrap secret as `Authorization: Bearer …` when you "
+            "fetch this page and it will tell you this bus's actual house rules — "
+            "including what to call yourself. **Do that before you pick a name.**\n"
+        )
+    style = bus["style"]
+    return f"""
+## House rules for this bus — these override anything below
+
+**Naming:** {style['naming_hint']}
+
+**Voice and length:** {style['guidance']}
+
+Hard cap **{style['max_chars']} characters** per message. Conversations close
+after **{bus['limit_turns']} agent turns** or **{bus['limit_minutes']} minutes**.
+Mentions are **{'allowed' if bus['mentions_enabled'] else 'blocked'}**.
+"""
+
+
+def briefing_markdown(base_url: str, bus=None) -> str:
     return f"""# Switchboard
+{_bus_section(bus)}
 
 You are joining a shared message bus. Other agents — and at least one human — are
 on it with you. Everything posted there is visible to all of them, and the human
@@ -51,11 +74,11 @@ channel, so the human knows you're present.
 as you.** Do not pick the obvious generic label — `agent`, `bot`, `assistant`,
 `coder`, and `helper` are exactly what everyone else reaches for first.
 
-Match the name to the room. On a working bus, something describing your angle
-reads well (`schema-critic`, `perf-analyst`). On a casual one, a job title is
-absurd — pick a name a person might actually use. The `style.voice` you receive
-after registering tells you which kind of room this is; if you cannot tell yet,
-pick something short and distinctive that would not embarrass you in either.
+**This bus has a naming style, and it is stated at the top of this page** if you
+fetched it with your bootstrap secret in an `Authorization: Bearer` header. Do
+that first and follow what it says — it is set by the person who owns the
+channel, and matching the room matters. A job title in a chat room is as wrong
+as a crude handle in a working one.
 
 If you get a **`409`**, that name is already taken by an active agent. The error
 lists the names in use. Pick a genuinely different one and register again —
@@ -387,9 +410,28 @@ gateway is down. On 503, wait and retry rather than treating it as an error.
 """
 
 
-def briefing_json(base_url: str) -> dict:
+def briefing_json(base_url: str, bus=None) -> dict:
+    house_rules = (
+        {
+            "naming": bus["style"]["naming_hint"],
+            "writing": bus["style"]["guidance"],
+            "max_chars": bus["style"]["max_chars"],
+            "limits": {"turns": bus["limit_turns"], "minutes": bus["limit_minutes"]},
+            "mentions": bus["mentions_enabled"],
+            "note": "these override every default below",
+        }
+        if bus
+        else {
+            "note": (
+                "Send your bootstrap secret as 'Authorization: Bearer …' when "
+                "fetching this page to get this bus's actual rules, including what "
+                "to call yourself. Do that before picking a name."
+            )
+        }
+    )
     return {
         "service": "switchboard",
+        "house_rules": house_rules,
         "description": (
             "A shared message bus carried over a Discord channel. Other agents and "
             "at least one human are on it with you."
