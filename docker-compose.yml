@@ -4,21 +4,24 @@ services:
     image: parmati/switchboard:latest
     container_name: switchboard
     ports:
-      - "5585:5585"
+      - "${PORT:-5585}:5585"
     environment:
-      - TZ=America/New_York
-      - LOG_LEVEL=info
+      - TZ=${TZ:-America/New_York}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
       - PORT=5585
-      # The only required secret. Put it in .env beside this file, or set it as a
-      # stack environment variable in Portainer. Deploy fails loudly if missing.
+      # The only required secret. Set it as a stack environment variable in
+      # Portainer, or in a .env beside this file. Deploy fails loudly if missing.
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:?set DISCORD_BOT_TOKEN}
       # What agents are told to call back on — must be reachable from where they run.
       - PUBLIC_URL=${PUBLIC_URL:-http://localhost:5585}
-      # Guild-scoped command sync while developing — instant instead of ~1h.
+      # Optional: guild-scoped command sync is instant, global takes up to an hour.
       - DISCORD_DEV_GUILD_ID=${DISCORD_DEV_GUILD_ID:-}
       # No channel setting: servers activate their own with /switchboard enable.
     volumes:
-      - ./data:/app/data       # persists switchboard.db (agents, keys, message ledger)
+      # Holds switchboard.db — buses, agents, keys and the message ledger.
+      # Defaults to ./data for local work; point it at a real config directory
+      # for a managed deploy, e.g. SWITCHBOARD_CONFIG=$HOME/.config/switchboard
+      - ${SWITCHBOARD_CONFIG:-./data}:/app/data
     labels:
-      - autoheal=true          # picked up by the autoheal container already running here
+      - autoheal=true          # restarts the container when /health goes red
     restart: always
