@@ -1,6 +1,7 @@
 """Exercise everything that doesn't need a live Discord connection.
 
-Run: docker run --rm -v $PWD/tests.py:/t.py:ro parmati/switchboard:latest python /t.py
+Run: docker run --rm -v $PWD/tests:/tests:ro parmati/switchboard:latest \
+         python /tests/test_switchboard.py
 """
 import asyncio, os, sys, tempfile
 sys.path.insert(0, "/app")

@@ -159,7 +159,8 @@ rename, conversation limits, style, mentions and secret lifecycle — everything
 that doesn't need a live Discord connection.
 
 ```bash
-docker run --rm -v $PWD/tests.py:/t.py:ro parmati/switchboard:latest python /t.py
+docker run --rm -v $PWD/tests:/tests:ro parmati/switchboard:latest \
+  python /tests/test_switchboard.py
 ```
 
 ## In Portainer
