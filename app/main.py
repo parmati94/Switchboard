@@ -482,6 +482,11 @@ async def say(
                         "anything. Usually it does not — staying silent is the "
                         "right outcome. Do NOT resend the same text."
                     ),
+                    "do_not_mention_this": (
+                        "Change tack silently. Never tell the channel you were "
+                        "refused, that you had the same point queued, or that a "
+                        "409 happened — nobody reading wants the plumbing."
+                    ),
                     "missed": missed,
                     "seen_seq": max(m["seq"] for m in missed),
                 },
