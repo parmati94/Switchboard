@@ -202,8 +202,14 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         roster=await db.roster(bus["bus_id"]),
         protocol={
             "address_with": "@name:",
-            "max_message_chars": 2000,
             "kinds": list(KINDS),
+            "style": bus["style"],
+            "limits": {
+                "turns": bus["limit_turns"],
+                "minutes": bus["limit_minutes"],
+                "note": "conversations close when either is reached; posting to a "
+                        "closed conversation returns 423",
+            },
         },
     )
 
@@ -236,6 +242,10 @@ async def messages(
         messages=rows,
         head_seq=stats["head_seq"],
         next_after=rows[-1]["seq"] if rows else after,
+        # Re-asserted on every poll rather than only at registration: advisory
+        # text delivered once drifts out of an agent's attention within a few
+        # turns, and the human should never have to restate it in the channel.
+        style=bus["style"],
     )
 
 
@@ -265,11 +275,63 @@ async def say(
             ),
         )
 
+    style = bus["style"]
+    if len(body.text) > style["max_chars"]:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Too long: {len(body.text)} chars, limit {style['max_chars']} on this "
+                f"bus (style: {style['preset']}). {style['guidance']} "
+                "Rewrite shorter — do not split it across several messages."
+            ),
+        )
+
     conversation_id = body.conversation_id or f"c_{secrets.token_hex(3)}"
+    convo = await db.open_conversation(bus["bus_id"], conversation_id)
+
+    if convo["closed_at"]:
+        raise HTTPException(
+            status_code=423,
+            detail=(
+                f"Conversation {conversation_id} is closed ({convo['closed_reason']}). "
+                "Do not reopen it or continue it under a new id. Stop, and wait for a "
+                "human to raise something new."
+            ),
+        )
+
+    # Limits are checked before sending, so an over-budget message never reaches
+    # the channel. Turns bound cost, minutes rescue a stuck or slow exchange.
+    turns_used = await db.agent_turns_used(bus["bus_id"], conversation_id)
+    elapsed_min = (time.time() - convo["started_at"]) / 60.0
+    exhausted = None
+    if turns_used >= bus["limit_turns"]:
+        exhausted = f"reached the {bus['limit_turns']}-turn limit"
+    elif elapsed_min >= bus["limit_minutes"]:
+        exhausted = f"ran past the {bus['limit_minutes']}-minute limit"
+
+    if exhausted:
+        await db.close_conversation(conversation_id, exhausted)
+        try:
+            await egress.send(
+                webhook_url=bus["webhook_url"],
+                text=f"🛑 Conversation `{conversation_id}` closed — {exhausted}.",
+                username=settings.webhook_name,
+            )
+        except Exception:  # noqa: BLE001 - closing matters more than announcing it
+            log.warning("closure notice failed for %s", conversation_id, exc_info=True)
+        raise HTTPException(
+            status_code=423,
+            detail=(
+                f"Conversation {conversation_id} just closed — {exhausted}. Your message "
+                "was not sent. Stop posting and wait for a human."
+            ),
+        )
+
     prior = await db.messages_after(
         bus["bus_id"], after=0, limit=200, conversation_id=conversation_id
     )
     depth = len(prior) + 1
+    budget_left = max(0, bus["limit_turns"] - turns_used - 1)
 
     try:
         message_ids = await egress.send(
@@ -277,7 +339,7 @@ async def say(
             text=body.text,
             username=name,
             avatar_url=agent.get("avatar_url"),
-            footer=f"{conversation_id} · turn {depth}",
+            footer=f"{conversation_id} · turn {depth} · {budget_left} left",
         )
     except NoWebhookConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -298,6 +360,7 @@ async def say(
             conversation_id=conversation_id,
             to_agents=body.to,
             depth=depth,
+            budget_left=budget_left,
             reply_to=body.reply_to,
             kind=body.kind,
         )

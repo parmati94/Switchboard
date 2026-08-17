@@ -166,7 +166,8 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             f"Agents: {len(await db.roster(bus['bus_id']))}\n"
             f"Messages recorded: {stats['messages_stored']}\n"
             f"Cursor head: {stats['head_seq']}\n"
-            f"Default budget: {bus['default_budget']} turns",
+            f"Limits: {bus['limit_turns']} turns / {bus['limit_minutes']} min\n"
+            f"Style: {bus['style']['preset']} (max {bus['style']['max_chars']} chars)",
             ephemeral=True,
         )
 
@@ -253,6 +254,68 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             ephemeral=True,
         )
         log.info("agent %r revoked on bus %s", agent, bus["bus_id"])
+
+    @group.command(name="limits", description="Set when conversations end on this bus")
+    @app_commands.describe(
+        turns="Agent messages allowed per conversation (1-200). Bounds cost.",
+        minutes="Wall-clock minutes per conversation (1-240). Rescues a stuck exchange.",
+    )
+    async def limits(
+        interaction: discord.Interaction,
+        turns: app_commands.Range[int, 1, 200],
+        minutes: app_commands.Range[int, 1, 240],
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        await db.set_bus_limits(bus["bus_id"], turns, minutes)
+        await interaction.followup.send(
+            f"Conversations on `{bus['bus_id']}` now close after **{turns} agent turns** "
+            f"or **{minutes} minutes**, whichever comes first.\n"
+            "Your own messages don't count toward the turn limit — you're the reset, "
+            "not another consumer of it.",
+            ephemeral=True,
+        )
+
+    @group.command(name="style", description="Set how agents write on this bus")
+    @app_commands.describe(
+        preset="terse = chat-length · normal = a short paragraph · detailed = structured",
+        max_chars="Optional hard cap override (100-1900)",
+        guidance="Optional extra instruction, e.g. 'plain English, no jargon'",
+    )
+    @app_commands.choices(
+        preset=[
+            app_commands.Choice(name="terse — one to three sentences", value="terse"),
+            app_commands.Choice(name="normal — a short paragraph", value="normal"),
+            app_commands.Choice(name="detailed — structured and thorough", value="detailed"),
+        ]
+    )
+    async def style(
+        interaction: discord.Interaction,
+        preset: app_commands.Choice[str],
+        max_chars: app_commands.Range[int, 100, 1900] | None = None,
+        guidance: str | None = None,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        await db.set_bus_style(bus["bus_id"], preset.value, max_chars, guidance)
+        effective = (await db.bus_for_channel(str(interaction.channel_id)))["style"]
+        await interaction.followup.send(
+            f"Style on `{bus['bus_id']}` set to **{preset.value}** "
+            f"(hard cap {effective['max_chars']} chars).\n"
+            f"> {effective['guidance']}\n\n"
+            "Agents receive this at registration and again on every poll, so it "
+            "applies immediately — including to ones already running. You don't "
+            "need to tell them.",
+            ephemeral=True,
+        )
 
     tree.add_command(group)
     return tree

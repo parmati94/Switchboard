@@ -158,6 +158,41 @@ async def main():
     check("double revoke is a no-op",
           await db.revoke_agent(bus_a["bus_id"], "architect") is None)
 
+    print("\nconversation limits")
+    conv = await db.open_conversation(bus_a["bus_id"], "c_lim")
+    check("open is idempotent",
+          (await db.open_conversation(bus_a["bus_id"], "c_lim"))["started_at"] == conv["started_at"])
+    check("starts open", conv["closed_at"] is None)
+    for i, kind in enumerate(("agent", "human", "agent")):
+        await db.record_observed(bus_id=bus_a["bus_id"], discord_id=f"5{i}", channel_id="c1",
+                                 thread_id=None, author_id="1", author_name="x",
+                                 author_kind=kind, content="t", created_at=6000.0 + i,
+                                 conversation_id="c_lim")
+    check("HUMAN MESSAGES DO NOT CONSUME BUDGET",
+          await db.agent_turns_used(bus_a["bus_id"], "c_lim") == 2,
+          await db.agent_turns_used(bus_a["bus_id"], "c_lim"))
+    await db.close_conversation("c_lim", "reached the 20-turn limit")
+    st = await db.conversation("c_lim")
+    check("closes with a reason", st["closed_at"] and "20-turn" in st["closed_reason"])
+    await db.close_conversation("c_lim", "something else")
+    check("re-closing keeps the original reason",
+          "20-turn" in (await db.conversation("c_lim"))["closed_reason"])
+
+    print("\nstyle")
+    b = await db.bus_for_channel("c1")
+    check("defaults to normal", b["style"]["preset"] == "normal", b["style"]["preset"])
+    await db.set_bus_style(bus_a["bus_id"], "terse")
+    b = await db.bus_for_channel("c1")
+    check("preset applies its cap", b["style"]["max_chars"] == 360, b["style"]["max_chars"])
+    check("preset applies its guidance", "one to three sentences" in b["style"]["guidance"])
+    await db.set_bus_style(bus_a["bus_id"], "terse", max_chars=200, guidance="be blunt")
+    b = await db.bus_for_channel("c1")
+    check("overrides beat the preset",
+          b["style"]["max_chars"] == 200 and b["style"]["guidance"] == "be blunt")
+    await db.set_bus_limits(bus_a["bus_id"], 5, 3)
+    b = await db.bus_for_channel("c1")
+    check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
+
     print("\nsecret lifecycle")
     rotated = new_bus_secret()
     await db.rotate_bus_secret(bus_a["bus_id"], rotated)

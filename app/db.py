@@ -25,7 +25,35 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+
+# How a bus wants its conversations to read. `guidance` is advisory and shapes
+# tone; `max_chars` is a hard cap that catches drift. Guidance alone gets ignored
+# under pressure; a cap alone can only truncate, never make writing read better.
+STYLE_PRESETS = {
+    "terse": {
+        "max_chars": 360,
+        "guidance": (
+            "Reply in one to three sentences. Conversational, like chat. No headings, "
+            "no bullet lists, no bold. Make one point and stop."
+        ),
+    },
+    "normal": {
+        "max_chars": 1100,
+        "guidance": (
+            "Reply in a short paragraph or two of prose. Make one point well rather "
+            "than several thinly. Avoid headings and long bullet lists."
+        ),
+    },
+    "detailed": {
+        "max_chars": 1900,
+        "guidance": (
+            "Longer structured answers are welcome. Use headings and lists where they "
+            "genuinely aid the reader rather than by reflex."
+        ),
+    },
+}
+DEFAULT_STYLE = "normal"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -46,8 +74,29 @@ CREATE TABLE IF NOT EXISTS buses (
     enabled        INTEGER NOT NULL DEFAULT 1,
     created_by     TEXT,               -- discord user id that ran /enable
     created_at     REAL NOT NULL,
-    default_budget INTEGER NOT NULL DEFAULT 20
+    default_budget INTEGER NOT NULL DEFAULT 20,
+    -- When a conversation ends. Turns bound cost; minutes rescue you from an
+    -- agent that is stuck or merely slow. Whichever trips first wins.
+    limit_turns    INTEGER NOT NULL DEFAULT 20,
+    limit_minutes  INTEGER NOT NULL DEFAULT 10,
+    -- How it reads. Delivered to agents at registration and on every poll, so
+    -- the human never has to relay it.
+    style_preset   TEXT    NOT NULL DEFAULT 'normal',
+    style_max_chars INTEGER,
+    style_guidance TEXT
 );
+
+-- Open/closed state per exchange. Turn counts are derived from messages; only
+-- closure needs storing.
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id TEXT PRIMARY KEY,
+    bus_id          TEXT NOT NULL,
+    started_at      REAL NOT NULL,
+    closed_at       REAL,
+    closed_reason   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_bus ON conversations(bus_id);
 
 CREATE INDEX IF NOT EXISTS idx_buses_secret  ON buses(secret_hash);
 CREATE INDEX IF NOT EXISTS idx_buses_channel ON buses(channel_id);
@@ -150,6 +199,19 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
         "created_by": row["created_by"],
         "created_at": row["created_at"],
         "default_budget": row["default_budget"],
+        "limit_turns": row["limit_turns"],
+        "limit_minutes": row["limit_minutes"],
+        "style": _style_for(row),
+    }
+
+
+def _style_for(row: aiosqlite.Row) -> dict:
+    preset = row["style_preset"] or DEFAULT_STYLE
+    base = STYLE_PRESETS.get(preset, STYLE_PRESETS[DEFAULT_STYLE])
+    return {
+        "preset": preset,
+        "max_chars": row["style_max_chars"] or base["max_chars"],
+        "guidance": row["style_guidance"] or base["guidance"],
     }
 
 
@@ -175,15 +237,37 @@ class Database:
         await self._conn.commit()
         log.info("ledger open at %s (schema v%d)", self.path, SCHEMA_VERSION)
 
-    async def _migrate(self) -> None:
-        """v1 (single-tenant) ledgers predate bus_id. Add it rather than reset."""
+    async def _columns(self, table: str) -> set[str]:
         assert self._conn
-        async with self._conn.execute("PRAGMA table_info(messages)") as cur:
-            columns = {row["name"] for row in await cur.fetchall()}
-        if "bus_id" not in columns:
-            log.info("migrating messages table: adding bus_id")
+        async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+            return {row["name"] for row in await cur.fetchall()}
+
+    async def _migrate(self) -> None:
+        """Add columns to ledgers created by earlier schema versions.
+
+        CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so new
+        columns never appear without an explicit ALTER.
+        """
+        assert self._conn
+
+        message_cols = await self._columns("messages")
+        if "bus_id" not in message_cols:
+            log.info("migrating messages: adding bus_id")
             await self._conn.execute("ALTER TABLE messages ADD COLUMN bus_id TEXT")
-            await self._conn.commit()
+
+        bus_cols = await self._columns("buses")
+        for column, ddl in (
+            ("limit_turns", "INTEGER NOT NULL DEFAULT 20"),
+            ("limit_minutes", "INTEGER NOT NULL DEFAULT 10"),
+            ("style_preset", "TEXT NOT NULL DEFAULT 'normal'"),
+            ("style_max_chars", "INTEGER"),
+            ("style_guidance", "TEXT"),
+        ):
+            if column not in bus_cols:
+                log.info("migrating buses: adding %s", column)
+                await self._conn.execute(f"ALTER TABLE buses ADD COLUMN {column} {ddl}")
+
+        await self._conn.commit()
 
     async def close(self) -> None:
         if self._conn:
@@ -269,6 +353,75 @@ class Database:
         assert self._conn
         async with self._conn.execute(
             "SELECT COUNT(*) AS n FROM buses WHERE enabled = 1"
+        ) as cur:
+            return (await cur.fetchone())["n"]
+
+    async def set_bus_limits(self, bus_id: str, turns: int, minutes: int) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE buses SET limit_turns = ?, limit_minutes = ? WHERE bus_id = ?",
+            (turns, minutes, bus_id),
+        )
+        await self._conn.commit()
+
+    async def set_bus_style(
+        self,
+        bus_id: str,
+        preset: str,
+        max_chars: int | None = None,
+        guidance: str | None = None,
+    ) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE buses SET style_preset = ?, style_max_chars = ?, style_guidance = ? "
+            "WHERE bus_id = ?",
+            (preset, max_chars, guidance, bus_id),
+        )
+        await self._conn.commit()
+
+    # ---- conversations ---------------------------------------------------
+
+    async def open_conversation(self, bus_id: str, conversation_id: str) -> dict:
+        """Idempotent. Returns the conversation's current state."""
+        assert self._conn
+        await self._conn.execute(
+            "INSERT INTO conversations (conversation_id, bus_id, started_at) "
+            "VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO NOTHING",
+            (conversation_id, bus_id, time.time()),
+        )
+        await self._conn.commit()
+        state = await self.conversation(conversation_id)
+        assert state
+        return state
+
+    async def conversation(self, conversation_id: str) -> dict | None:
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT * FROM conversations WHERE conversation_id = ?", (conversation_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def close_conversation(self, conversation_id: str, reason: str) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE conversations SET closed_at = ?, closed_reason = ? "
+            "WHERE conversation_id = ? AND closed_at IS NULL",
+            (time.time(), reason, conversation_id),
+        )
+        await self._conn.commit()
+
+    async def agent_turns_used(self, bus_id: str, conversation_id: str) -> int:
+        """Only agent messages consume budget.
+
+        Human messages are free on purpose: the person in the channel is the
+        reset, not another consumer of it.
+        """
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT COUNT(*) AS n FROM messages "
+            "WHERE bus_id = ? AND conversation_id = ? AND author_kind = 'agent'",
+            (bus_id, conversation_id),
         ) as cur:
             return (await cur.fetchone())["n"]
 

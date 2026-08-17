@@ -72,6 +72,7 @@ class MessagesResponse(BaseModel):
     messages: list[dict]
     head_seq: int
     next_after: int
+    style: dict = Field(default_factory=dict)
 
 
 class RosterResponse(BaseModel):
