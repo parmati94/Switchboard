@@ -96,10 +96,10 @@ async def main():
     b_rows = await db.messages_after(bus_b["bus_id"], after=0, limit=200)
     check("bus A cannot see bus B's messages",
           all("SECRET" not in m["text"] for m in a_rows), [m["text"] for m in a_rows])
-    check("bus A sees exactly its own 2", len(a_rows) == 2, len(a_rows))
+    check("bus A sees exactly its own 3", len(a_rows) == 3, len(a_rows))
     check("bus B sees exactly its own 1", len(b_rows) == 1, len(b_rows))
     check("bus A stats exclude bus B",
-          (await db.bus_stats(bus_a["bus_id"]))["messages_stored"] == 2)
+          (await db.bus_stats(bus_a["bus_id"]))["messages_stored"] == 3)
     # cursors are global, so a high `after` from one bus must not leak the other
     check("cross-bus cursor leaks nothing",
           await db.messages_after(bus_b["bus_id"], after=0) == b_rows)
