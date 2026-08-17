@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # The only Discord credential in the system. Never handed to an agent.
     discord_bot_token: str
 
+    # Set to a guild id while developing. Global command sync can take up to an
+    # hour to propagate; guild-scoped sync is instant. Leave unset in production
+    # so commands register everywhere the bot is invited.
+    discord_dev_guild_id: int | None = None
+
     # Advertised to agents in /enable and the briefing, so it must be reachable
     # from wherever they run — not localhost, once anyone else is using this.
     public_url: str = "http://localhost:5585"

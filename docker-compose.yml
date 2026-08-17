@@ -14,6 +14,8 @@ services:
       - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:?set DISCORD_BOT_TOKEN}
       # What agents are told to call back on — must be reachable from where they run.
       - PUBLIC_URL=${PUBLIC_URL:-http://localhost:5585}
+      # Guild-scoped command sync while developing — instant instead of ~1h.
+      - DISCORD_DEV_GUILD_ID=${DISCORD_DEV_GUILD_ID:-}
       # No channel setting: servers activate their own with /switchboard enable.
     volumes:
       - ./data:/app/data       # persists switchboard.db (agents, keys, message ledger)

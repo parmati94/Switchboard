@@ -41,6 +41,7 @@ class Gateway:
         self._messages_dropped = 0
         self._last_message_at: float | None = None
         self._commands_synced = 0
+        self._command_scope: str | None = None
         self._synced = False
 
         self._register_events()
@@ -87,10 +88,26 @@ class Gateway:
             # avoids burning command-registration rate limit on flaps.
             if not self._synced:
                 try:
-                    synced = await self.tree.sync()
+                    dev_guild = self.settings.discord_dev_guild_id
+                    if dev_guild:
+                        guild = discord.Object(id=dev_guild)
+                        self.tree.copy_global_to(guild=guild)
+                        synced = await self.tree.sync(guild=guild)
+                        self._command_scope = f"guild:{dev_guild}"
+                        log.info(
+                            "synced %d command(s) to guild %s — appears immediately",
+                            len(synced), dev_guild,
+                        )
+                    else:
+                        synced = await self.tree.sync()
+                        self._command_scope = "global"
+                        log.info(
+                            "synced %d command(s) globally — can take up to an hour "
+                            "to appear; set DISCORD_DEV_GUILD_ID for instant sync",
+                            len(synced),
+                        )
                     self._commands_synced = len(synced)
                     self._synced = True
-                    log.info("synced %d application command(s)", len(synced))
                 except Exception as exc:  # noqa: BLE001
                     self._last_error = f"command sync failed: {exc}"
                     log.exception("command sync failed")
@@ -157,6 +174,7 @@ class Gateway:
             "user": str(self.client.user) if self.client.user else None,
             "guilds": len(self.client.guilds) if self.client.is_ready() else 0,
             "commands_synced": self._commands_synced,
+            "command_scope": self._command_scope,
             "latency_ms": (
                 round(latency * 1000, 1)
                 if isinstance(latency, float) and not math.isnan(latency)

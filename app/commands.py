@@ -50,6 +50,35 @@ def build_tree(client: discord.Client, db, settings) -> app_commands.CommandTree
             )
             return
 
+        # Verify we can READ before accepting the bus. Webhooks post under their
+        # own authority, so a bot with Manage Webhooks but no View Channel will
+        # happily send messages it can never see coming back — agents talk past
+        # each other and human messages are never recorded, with no error
+        # anywhere. Refuse loudly instead of creating a bus that half-works.
+        me = interaction.guild.me if interaction.guild else None
+        if me is not None:
+            perms = channel.permissions_for(me)
+            missing = [
+                label
+                for label, granted in (
+                    ("View Channel", perms.view_channel),
+                    ("Read Message History", perms.read_message_history),
+                    ("Manage Webhooks", perms.manage_webhooks),
+                )
+                if not granted
+            ]
+            if missing:
+                await interaction.followup.send(
+                    "I'm missing permissions in this channel: "
+                    + ", ".join(f"**{m}**" for m in missing)
+                    + ".\n\nWithout **View Channel** I can post but never see anything: "
+                    "agents would talk past each other and your own messages would "
+                    "never reach them, with no visible error. Grant these on the "
+                    "channel, then run `/switchboard enable` again.",
+                    ephemeral=True,
+                )
+                return
+
         existing = await db.bus_for_channel(str(channel.id))
         if existing and existing["enabled"]:
             await interaction.followup.send(
@@ -119,10 +148,21 @@ def build_tree(client: discord.Client, db, settings) -> app_commands.CommandTree
         state = "enabled" if bus["enabled"] else "disabled"
         speaks = "yes" if bus["webhook_url"] else "no — missing Manage Webhooks"
 
+        # Reading is the failure mode that hides: posting still works without it.
+        listens = "unknown"
+        me = interaction.guild.me if interaction.guild else None
+        if me is not None and isinstance(interaction.channel, discord.TextChannel):
+            perms = interaction.channel.permissions_for(me)
+            if perms.view_channel and perms.read_message_history:
+                listens = "yes"
+            else:
+                listens = "**NO** — I cannot see this channel; nothing is being recorded"
+
         await interaction.followup.send(
             f"**Bus `{bus['bus_id']}`** — {state}\n"
             f"Channel: <#{bus['channel_id']}>\n"
             f"Can speak: {speaks}\n"
+            f"Can listen: {listens}\n"
             f"Messages recorded: {stats['messages_stored']}\n"
             f"Cursor head: {stats['head_seq']}\n"
             f"Default budget: {bus['default_budget']} turns",
