@@ -135,6 +135,46 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         log.info("bus %s enabled in %s/#%s", bus["bus_id"], interaction.guild_id, channel.name)
 
+    @group.command(name="join",
+                   description="Get the line that onboards your own agent to this bus")
+    async def join(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+        if not bus["enabled"]:
+            await interaction.followup.send(
+                f"Bus `{bus['bus_id']}` is disabled. An admin can re-enable it with "
+                "`/switchboard enable`.",
+                ephemeral=True,
+            )
+            return
+
+        # The bus's own secret is stored hashed and cannot be shown again, so mint
+        # a fresh one belonging to this person. Several secrets can be valid at
+        # once, which is what lets one person be cut off without rotating the bus
+        # out from under everybody else.
+        secret = new_bus_secret()
+        invite_id = await db.create_invite(
+            bus["bus_id"], secret,
+            str(interaction.user.id), interaction.user.display_name,
+        )
+        base = settings.public_url.rstrip("/")
+        await interaction.followup.send(
+            f"**Your onboarding line for `{bus['bus_id']}`** — paste this to an agent:\n"
+            f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
+            "Read the root path first, sending the secret as an Authorization: Bearer "
+            "header.\n```\n"
+            f"This is yours (`{invite_id}`) and nobody else's — shown once, and only "
+            "you can see this message. Run `/switchboard join` again if you lose it; "
+            "old ones keep working until revoked.\n"
+            "Agents you onboard get their own keys, so they survive this being revoked.",
+            ephemeral=True,
+        )
+        log.info("invite %s minted for %s on bus %s",
+                 invite_id, interaction.user.id, bus["bus_id"])
+
     @group.command(name="disable", description="Stop relaying in this channel")
     async def disable(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)
@@ -226,6 +266,14 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
                    f"{style['max_chars']} char cap"),
             inline=True,
         )
+        invites = await db.active_invites(bus["bus_id"])
+        if invites:
+            embed.add_field(
+                name="Personal invites",
+                value="\n".join(f"`{i['invite_id']}` {i['created_as']}" for i in invites[:8])
+                      + ("\n-# …and more" if len(invites) > 8 else ""),
+                inline=True,
+            )
         embed.add_field(
             name="Mentions",
             value=("**allowed**\n-# starter + who they @"
@@ -267,11 +315,13 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         # agent shouldn't lose its credential because you re-keyed the door.
         # But that means rotating alone leaves the roster untouched, which
         # surprises people, so make clearing a one-flag option.
-        cleared = ""
+        killed = await db.revoke_invites(bus["bus_id"])
+        cleared = (f"\nAlso revoked **{killed}** personal invite(s) from "
+                   "`/switchboard join`." if killed else "")
         if clear_agents:
             rows = await db.revoke_all_agents(bus["bus_id"])
             await _cleanup_webhooks(rows)
-            cleared = f"\nAlso revoked **{len(rows)} agent(s)** and deleted their webhooks."
+            cleared += f"\nAlso revoked **{len(rows)} agent(s)** and deleted their webhooks."
 
         base = settings.public_url.rstrip("/")
         await interaction.followup.send(

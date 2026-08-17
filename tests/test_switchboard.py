@@ -348,6 +348,30 @@ async def main():
     await db.set_bus_mentions(bus_a["bus_id"], False)
     check("toggle persists", (await db.bus_for_channel("c1"))["mentions_enabled"] is False)
 
+    print("\npersonal invites (/switchboard join)")
+    inv_secret = new_bus_secret()
+    inv_id = await db.create_invite(bus_a["bus_id"], inv_secret, "user1", "Alex")
+    got = await db.bus_for_secret(inv_secret)
+    check("an invite resolves to its bus", got and got["bus_id"] == bus_a["bus_id"])
+    check("the bus's own secret still works too",
+          (await db.bus_for_secret(secret_a))["bus_id"] == bus_a["bus_id"])
+    second = new_bus_secret()
+    await db.create_invite(bus_a["bus_id"], second, "user2", "Sam")
+    check("SEVERAL SECRETS VALID AT ONCE",
+          await db.bus_for_secret(inv_secret) and await db.bus_for_secret(second))
+    check("listed with who they belong to",
+          sorted(i["created_as"] for i in await db.active_invites(bus_a["bus_id"]))
+          == ["Alex", "Sam"])
+    n = await db.revoke_invites(bus_a["bus_id"], created_by="user1")
+    check("REVOKING ONE PERSON LEAVES THE OTHERS", n == 1
+          and await db.bus_for_secret(inv_secret) is None
+          and await db.bus_for_secret(second) is not None)
+    check("an invite for another bus is not accepted here",
+          (await db.bus_for_secret(second))["bus_id"] == bus_a["bus_id"])
+    await db.revoke_invites(bus_a["bus_id"])
+    check("revoking all clears them", await db.bus_for_secret(second) is None)
+    check("and the bus secret is untouched", await db.bus_for_secret(secret_a) is not None)
+
     print("\nsecret lifecycle")
     rotated = new_bus_secret()
     await db.rotate_bus_secret(bus_a["bus_id"], rotated)

@@ -91,24 +91,29 @@ class Gateway:
             # avoids burning command-registration rate limit on flaps.
             if not self._synced:
                 try:
+                    # ALWAYS sync globally. A dev-guild-only sync registers the
+                    # commands in exactly one server, so the bot can be invited
+                    # anywhere and /switchboard simply will not exist there —
+                    # which silently breaks the entire multi-tenant premise.
+                    synced = await self.tree.sync()
+                    self._command_scope = "global"
+                    log.info(
+                        "synced %d command(s) globally — available in every server "
+                        "the bot joins (can take up to an hour to propagate)",
+                        len(synced),
+                    )
+
+                    # Additionally mirror into the dev guild, where they appear
+                    # instantly. Guild commands shadow global ones of the same
+                    # name, so this adds no duplicates.
                     dev_guild = self.settings.discord_dev_guild_id
                     if dev_guild:
                         guild = discord.Object(id=dev_guild)
                         self.tree.copy_global_to(guild=guild)
-                        synced = await self.tree.sync(guild=guild)
-                        self._command_scope = f"guild:{dev_guild}"
-                        log.info(
-                            "synced %d command(s) to guild %s — appears immediately",
-                            len(synced), dev_guild,
-                        )
-                    else:
-                        synced = await self.tree.sync()
-                        self._command_scope = "global"
-                        log.info(
-                            "synced %d command(s) globally — can take up to an hour "
-                            "to appear; set DISCORD_DEV_GUILD_ID for instant sync",
-                            len(synced),
-                        )
+                        await self.tree.sync(guild=guild)
+                        self._command_scope = "global + dev guild"
+                        log.info("also mirrored to the dev guild for instant testing")
+
                     self._commands_synced = len(synced)
                     self._synced = True
                 except Exception as exc:  # noqa: BLE001

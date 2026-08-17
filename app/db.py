@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -220,6 +220,23 @@ CREATE TABLE IF NOT EXISTS conversations (
 CREATE INDEX IF NOT EXISTS idx_conversations_bus ON conversations(bus_id);
 
 CREATE INDEX IF NOT EXISTS idx_buses_secret  ON buses(secret_hash);
+
+-- A bus can have several valid bootstrap secrets. The one from /enable is stored
+-- hashed and cannot be shown again, so anyone else who wants to onboard an agent
+-- needs their own — minted by /switchboard join, attributable, and revocable
+-- individually rather than by rotating the bus out from under everybody.
+CREATE TABLE IF NOT EXISTS bus_invites (
+    invite_id   TEXT PRIMARY KEY,
+    bus_id      TEXT NOT NULL,
+    secret_hash TEXT NOT NULL,
+    created_by  TEXT,               -- discord user id
+    created_as  TEXT,               -- display name at the time, for the roster
+    created_at  REAL NOT NULL,
+    revoked_at  REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_invites_secret ON bus_invites(secret_hash);
+CREATE INDEX IF NOT EXISTS idx_invites_bus    ON bus_invites(bus_id);
 CREATE INDEX IF NOT EXISTS idx_buses_channel ON buses(channel_id);
 
 -- One row per agent per bus. Names are unique within a bus, never across buses.
@@ -509,14 +526,61 @@ class Database:
             return _row_to_bus(row) if row else None
 
     async def bus_for_secret(self, secret: str) -> dict | None:
-        """Resolve a bearer token to exactly one bus. Enabled buses only."""
+        """Resolve a bootstrap secret to a bus. Enabled buses only.
+
+        Checks the bus's own secret first, then any invite minted by
+        /switchboard join — a bus may have several valid secrets so that people
+        can be onboarded, and revoked, one at a time.
+        """
         assert self._conn
+        h = hash_secret(secret)
         async with self._conn.execute(
-            "SELECT * FROM buses WHERE secret_hash = ? AND enabled = 1",
-            (hash_secret(secret),),
+            "SELECT * FROM buses WHERE secret_hash = ? AND enabled = 1", (h,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                return _row_to_bus(row)
+
+        async with self._conn.execute(
+            "SELECT b.* FROM buses b JOIN bus_invites i ON i.bus_id = b.bus_id "
+            "WHERE i.secret_hash = ? AND i.revoked_at IS NULL AND b.enabled = 1",
+            (h,),
         ) as cur:
             row = await cur.fetchone()
             return _row_to_bus(row) if row else None
+
+    async def create_invite(self, bus_id, secret, created_by, created_as) -> str:
+        assert self._conn
+        invite_id = "inv_" + secrets.token_hex(3)
+        await self._conn.execute(
+            "INSERT INTO bus_invites "
+            "(invite_id, bus_id, secret_hash, created_by, created_as, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (invite_id, bus_id, hash_secret(secret), created_by, created_as, time.time()),
+        )
+        await self._conn.commit()
+        return invite_id
+
+    async def revoke_invites(self, bus_id: str, created_by: str | None = None) -> int:
+        """Revoke every invite on a bus, or just one person's."""
+        assert self._conn
+        sql = "UPDATE bus_invites SET revoked_at = ? WHERE bus_id = ? AND revoked_at IS NULL"
+        params = [time.time(), bus_id]
+        if created_by:
+            sql += " AND created_by = ?"
+            params.append(created_by)
+        cur = await self._conn.execute(sql, params)
+        await self._conn.commit()
+        return cur.rowcount
+
+    async def active_invites(self, bus_id: str) -> list[dict]:
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT invite_id, created_by, created_as, created_at FROM bus_invites "
+            "WHERE bus_id = ? AND revoked_at IS NULL ORDER BY created_at",
+            (bus_id,),
+        ) as cur:
+            return [dict(r) for r in await cur.fetchall()]
 
     async def set_bus_webhook(self, bus_id: str, webhook_id: str, webhook_url: str) -> None:
         assert self._conn

@@ -9,6 +9,7 @@ the container immediately with a clear error, not surface later as a gateway tha
 silently never connects.
 """
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +38,17 @@ class Settings(BaseSettings):
 
     port: int = 5585
     log_level: str = "info"
+
+    @field_validator("discord_dev_guild_id", mode="before")
+    @classmethod
+    def _blank_is_none(cls, value):
+        """Treat an empty string as unset.
+
+        Compose writes `FOO=` for an unset variable, so an optional int arrives
+        as "" rather than absent, which pydantic rejects — and the container
+        crash-loops on boot. That is the normal production case: no dev guild.
+        """
+        return None if value in ("", None) else value
 
     # Bind-mounted to ./data on the host so the ledger survives a rebuild.
     db_path: str = "/app/data/switchboard.db"

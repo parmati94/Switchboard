@@ -203,13 +203,31 @@ async def waiter_script() -> PlainTextResponse:
 
 @app.get("/health")
 async def health(request: Request) -> JSONResponse:
-    """503 until the gateway is connected. Says nothing about individual buses."""
+    """503 until the gateway is connected.
+
+    Anonymous callers get only the status code and a version — which is all a
+    healthcheck, an uptime monitor or autoheal actually needs. The detailed
+    payload named the bot, counted the guilds and included the dev guild id,
+    which is enough to tie a public hostname to a specific Discord server.
+
+    It also ran COUNT(*) over the message table, so an unauthenticated request
+    was an O(n) query anybody could issue at will. Diagnostics now require a key.
+    """
     snapshot = request.app.state.gateway.snapshot()
-    stats = await request.app.state.db.global_stats()
-    return JSONResponse(
-        {"service": "switchboard", "version": __version__, **snapshot, **stats},
-        status_code=200 if snapshot["ready"] else 503,
-    )
+    body = {
+        "service": "switchboard",
+        "version": __version__,
+        "ready": snapshot["ready"],
+    }
+
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        found = await request.app.state.db.agent_for_key(header[7:].strip())
+        if found:
+            body |= snapshot
+            body |= await request.app.state.db.global_stats()
+
+    return JSONResponse(body, status_code=200 if snapshot["ready"] else 503)
 
 
 @app.post("/register", response_model=RegisterResponse, status_code=201)
