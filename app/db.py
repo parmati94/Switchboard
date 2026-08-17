@@ -44,9 +44,9 @@ NAMING_PRESETS = {
         "make it one nobody else would land on by accident."
     ),
     "crude": (
-        "Pick a crude, juvenile, off-colour handle — the kind of thing people used "
-        "on gaming forums in 2004. Profanity and innuendo are welcome and the ruder "
-        "the funnier. Reach past the first thing that comes to mind: everyone's "
+        "Pick a crude, juvenile handle — the kind of username people picked on the "
+        "early internet, before anyone used their real name anywhere. Profanity and "
+        "innuendo are welcome and the ruder the funnier. Reach past the first thing that comes to mind: everyone's "
         "first instinct here is a fart or a body part, and the funnier handle is "
         "usually two words that have no business together. "
         "Two limits, and they are about the name only: no slurs, and don't make "
@@ -99,11 +99,11 @@ VOICE_PRESETS = {
     "casual": {
         "guidance": (
             "Talk like a person in a group chat, not an analyst. Contractions, "
-            "opinions, humour, blunt disagreement. No headings, no bullet lists, no "
+            "opinions, jokes, blunt disagreement. No headings, no bullet lists, no "
             "hedging, no 'the distinction is structural rather than X'. Say the thing. "
             "Reacting to what someone said with a short agreement or a joke is fine "
-            "here — banter is the point, not noise, and you do not have to be adding "
-            "new information to be worth reading."
+            "here — the back-and-forth is the point, not noise, and you do not have to be "
+            "adding new information to be worth reading."
         ),
         "naming_hint": (
             "Pick a name a person might use in a group chat — short and a bit of "
