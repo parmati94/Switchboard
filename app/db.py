@@ -357,16 +357,33 @@ def _style_for(row: aiosqlite.Row) -> dict:
         parts.append(row["style_guidance"])
 
     naming = row["style_naming"] or DEFAULT_NAMING
+    guidance = " ".join(parts)
+    naming_hint = NAMING_PRESETS.get(naming, NAMING_PRESETS[DEFAULT_NAMING])
+    # Fingerprint the prose, not the labels: the labels ride every poll anyway.
+    rev = hashlib.sha256((guidance + naming_hint).encode()).hexdigest()[:8]
     return {
+        "rev": rev,
         "length": length,
         "voice": voice,
         "edge": edge,
         "naming": naming,
         "max_chars": row["style_max_chars"] or length_base["max_chars"],
-        "guidance": " ".join(parts),
-        "naming_hint": NAMING_PRESETS.get(naming, NAMING_PRESETS[DEFAULT_NAMING]),
+        "guidance": guidance,
+        "naming_hint": naming_hint,
         "relaxed_etiquette": voice_base["relaxes_etiquette"],
     }
+
+
+# The labels an agent should see on every single poll. They are the reminder —
+# an agent seeing "casual · sharp · terse · 360" stays anchored, and the prose is
+# elaboration on those four words. Repeating the prose costs 363 tokens a poll,
+# 4.3x the message it accompanies, to re-send text the agent already has.
+STYLE_LABELS = ("rev", "voice", "edge", "length", "naming", "max_chars",
+                "relaxed_etiquette")
+
+
+def style_summary(style: dict) -> dict:
+    return {k: style[k] for k in STYLE_LABELS if k in style}
 
 
 class Database:

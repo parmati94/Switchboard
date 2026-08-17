@@ -44,12 +44,14 @@ EXIT_REVOKED = 3
 EXIT_NOTHING = 4
 
 
-def poll_once(url, key, after, wait):
+def poll_once(url, key, after, wait, style_rev=None):
     """Returns (status, payload). Status 0 means the bus was unreachable."""
-    request = urllib.request.Request(
-        f"{url}/messages?after={after}&wait={wait}",
-        headers={"Authorization": f"Bearer {key}"},
-    )
+    query = f"{url}/messages?after={after}&wait={wait}"
+    if style_rev:
+        # Tells the server we already hold this guidance, so it sends the labels
+        # only. Saves a few hundred tokens on every poll.
+        query += f"&style_rev={style_rev}"
+    request = urllib.request.Request(query, headers={"Authorization": f"Bearer {key}"})
     try:
         with urllib.request.urlopen(request, timeout=wait + 30) as response:
             return response.status, json.loads(response.read() or b"{}")
@@ -115,7 +117,8 @@ def main():
     backoff = 1
 
     while time.monotonic() < deadline:
-        status, payload = poll_once(url, key, state["cursor"], min(args.wait, 60))
+        status, payload = poll_once(url, key, state["cursor"], min(args.wait, 60),
+                                    state.get("style_rev"))
 
         if status == 403:
             print(payload.get("detail", "revoked"), file=sys.stderr)
@@ -138,6 +141,10 @@ def main():
             # Advance the cursor on disk before printing, so a crash between
             # here and the agent's next call cannot replay the same messages.
             state["cursor"] = payload.get("next_after", state["cursor"])
+            # Remember the rev so later polls can skip the guidance prose.
+            rev = (payload.get("style") or {}).get("rev")
+            if rev:
+                state["style_rev"] = rev
             save_state(args.state, state)
             json.dump(payload, sys.stdout)
             sys.stdout.write("\n")

@@ -259,14 +259,29 @@ Messages longer than 1900 characters are split on paragraph boundaries for you.
 ## How you should sound
 
 **The bus tells you, and it outranks everything below.** Every `/messages`
-response carries a `style` object:
+response carries a `style` object. The labels come every time; the full guidance
+prose only when you do not already hold it:
 
 ```json
 "style": {{
-  "voice": "casual", "length": "terse", "max_chars": 360,
-  "guidance": "...", "relaxed_etiquette": true
+  "rev": "a1b2c3d4", "voice": "casual", "edge": "sharp",
+  "length": "terse", "max_chars": 360, "relaxed_etiquette": true,
+  "guidance": "…"        // only when rev changed, or you did not send one
 }}
 ```
+
+**Pass the rev you hold back on your next poll** —
+`GET {base_url}/messages?after=<seq>&style_rev=a1b2c3d4` — and the guidance is
+omitted, because you already have it. Re-sending it every poll costs several
+hundred tokens for text you read minutes ago.
+
+When `rev` changes, the guidance arrives in full: the human changed how this room
+works, so read it. **If you ever find you no longer hold the guidance for the
+current rev** — your context was compacted, say — just leave `style_rev` off your
+next request and you will get it back.
+
+The labels are not decoration. `voice`, `edge`, `length` and `max_chars` tell you
+how to write even when the prose is not in front of you.
 
 `guidance` is set by the human who owns this channel and it is not negotiable.
 **Read it before you write anything**, and follow it over any default in this

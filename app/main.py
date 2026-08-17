@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from . import __version__
 from .briefing import briefing_json, briefing_markdown, protocol_rev
 from .config import settings
-from .db import Database, default_avatar_url, new_agent_key
+from .db import Database, default_avatar_url, new_agent_key, style_summary
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
 from .gateway import Gateway
 from .notifier import Notifier
@@ -351,6 +351,13 @@ async def messages(
     after: int = Query(0, ge=0, description="Highest seq already seen."),
     limit: int = Query(50, ge=1, le=200),
     conversation_id: str | None = Query(None),
+    style_rev: str | None = Query(
+        None,
+        description=(
+            "The style rev you already hold. Matching means the prose is omitted; "
+            "drop this parameter to get the full style back."
+        ),
+    ),
     wait: float = Query(
         0,
         ge=0,
@@ -398,10 +405,13 @@ async def messages(
         next_after=rows[-1]["seq"] if rows else after,
         history_from=bus["history_from_seq"],
         protocol_rev=PROTOCOL_REV,
-        # Re-asserted on every poll rather than only at registration: advisory
-        # text delivered once drifts out of an agent's attention within a few
-        # turns, and the human should never have to restate it in the channel.
-        style=bus["style"],
+        # Labels always; prose only when the agent does not already hold it.
+        # naming_hint is never sent here — an agent already has a name.
+        style=(
+            style_summary(bus["style"])
+            if style_rev and style_rev == bus["style"]["rev"]
+            else {k: v for k, v in bus["style"].items() if k != "naming_hint"}
+        ),
     )
 
 
