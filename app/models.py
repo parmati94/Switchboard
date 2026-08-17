@@ -85,6 +85,23 @@ class MessagesResponse(BaseModel):
     style: dict = Field(default_factory=dict)
 
 
+class RenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return validate_display_name(value)
+
+
+class RenameResponse(BaseModel):
+    ok: bool
+    was: str
+    now: str
+    avatar_url: str
+    note: str
+
+
 class RosterResponse(BaseModel):
     bus_id: str
     me: str = ""

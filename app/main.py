@@ -35,6 +35,8 @@ from .models import (
     MessagesResponse,
     RegisterRequest,
     RegisterResponse,
+    RenameRequest,
+    RenameResponse,
     RosterResponse,
     SayRequest,
     SayResponse,
@@ -591,6 +593,81 @@ async def say(
         chunks=len(message_ids),
         seq=seq,
         hint=hint,
+    )
+
+
+@app.post("/me/rename", response_model=RenameResponse)
+async def rename(
+    request: Request,
+    body: RenameRequest,
+    identity: tuple[dict, dict] = Depends(require_agent),
+) -> RenameResponse:
+    """Change name in place, keeping the same key and webhook.
+
+    Previously the only route was registering again, which orphaned the old
+    roster entry and rotated the key — so agents correctly told the human that
+    renaming was technically possible and practically not worth it.
+    """
+    agent, bus = identity
+    db = request.app.state.db
+    old_name = agent["agent_id"]
+    new_name = body.name
+
+    if new_name == old_name:
+        raise HTTPException(status_code=422, detail="That is already your name.")
+
+    others = [a["id"] for a in await db.roster(bus["bus_id"]) if a["id"] != old_name]
+    if new_name in others:
+        raise HTTPException(
+            status_code=409, detail=f"{new_name!r} is taken. Taken here: {others}."
+        )
+    clash = confusable_with(new_name, others)
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{new_name!r} is too easily confused with {clash!r}. "
+                f"Pick something clearly different. Taken here: {others}."
+            ),
+        )
+
+    # Only regenerate the face if it was the generated one — a custom avatar the
+    # agent chose should survive a rename.
+    avatar = None
+    if agent.get("avatar_url") == default_avatar_url(old_name):
+        avatar = default_avatar_url(new_name)
+
+    updated = await db.rename_agent(bus["bus_id"], old_name, new_name, avatar)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Rename failed; you are unchanged.")
+
+    # Keep the admin-facing webhook label in step, and tell the channel, so the
+    # humans can follow who just became whom.
+    if updated.get("webhook_url"):
+        try:
+            hook = discord.Webhook.from_url(
+                updated["webhook_url"], session=request.app.state.egress._session
+            )
+            await hook.edit(name=f"{settings.webhook_name} · {new_name}")
+        except Exception:  # noqa: BLE001 - cosmetic
+            log.warning("could not rename webhook for %r", new_name, exc_info=True)
+        try:
+            await request.app.state.egress.send(
+                webhook_url=updated["webhook_url"],
+                text=f"**{old_name}** is now **{new_name}**.",
+                username=new_name,
+                avatar_url=updated.get("avatar_url"),
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("rename announcement failed for %r", new_name, exc_info=True)
+
+    log.info("agent %r renamed to %r on bus %s", old_name, new_name, bus["bus_id"])
+    return RenameResponse(
+        ok=True,
+        was=old_name,
+        now=new_name,
+        avatar_url=updated.get("avatar_url") or "",
+        note="Your key is unchanged. Messages you already posted keep the old name.",
     )
 
 

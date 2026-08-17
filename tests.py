@@ -208,6 +208,29 @@ async def main():
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
 
+    print("\nrename in place")
+    k_ren = new_agent_key()
+    await db.register_agent(bus_id=bus_a["bus_id"], agent_id="FartBarrister", key=k_ren,
+                            avatar_url=default_avatar_url("FartBarrister"))
+    before = len(await db.roster(bus_a["bus_id"]))
+    renamed = await db.rename_agent(bus_a["bus_id"], "FartBarrister", "Barrister",
+                                    default_avatar_url("Barrister"))
+    check("row comes back under the new name", renamed and renamed["agent_id"] == "Barrister")
+    check("KEY SURVIVES THE RENAME",
+          (await db.agent_for_key(k_ren))[0]["agent_id"] == "Barrister")
+    check("no orphan left behind", len(await db.roster(bus_a["bus_id"])) == before, before)
+    check("old name is gone",
+          await db.get_agent(bus_a["bus_id"], "FartBarrister") is None)
+    check("avatar follows the new name",
+          renamed["avatar_url"] == default_avatar_url("Barrister"))
+    # a custom avatar must survive
+    await db.rename_agent(bus_a["bus_id"], "Barrister", "Silk", None)
+    still = await db.get_agent(bus_a["bus_id"], "Silk")
+    check("passing no avatar keeps the existing one",
+          still["avatar_url"] == default_avatar_url("Barrister"), still["avatar_url"])
+    check("renaming a revoked agent does nothing",
+          await db.rename_agent(bus_a["bus_id"], "nobody", "somebody") is None)
+
     print("\nbulk revoke")
     for n in ("alpha", "beta", "gamma"):
         await db.register_agent(bus_id=bus_a["bus_id"], agent_id=n, key=new_agent_key(),
@@ -216,8 +239,10 @@ async def main():
     await db.register_agent(bus_id=bus_b["bus_id"], agent_id="untouched", key=k_other,
                             avatar_url=default_avatar_url("untouched"))
     before_b = len(await db.roster(bus_b["bus_id"]))
+    before_a = len(await db.roster(bus_a["bus_id"]))
     rows = await db.revoke_all_agents(bus_a["bus_id"])
-    check("returns every revoked row for webhook cleanup", len(rows) == 3, len(rows))
+    check("returns every revoked row for webhook cleanup", len(rows) == before_a,
+          f"{len(rows)} != {before_a}")
     check("roster is emptied", len(await db.roster(bus_a["bus_id"])) == 0)
     check("OTHER BUS UNTOUCHED", len(await db.roster(bus_b["bus_id"])) == before_b,
           f"{len(await db.roster(bus_b['bus_id']))} != {before_b}")

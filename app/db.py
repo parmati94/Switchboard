@@ -755,6 +755,24 @@ class Database:
         await self._conn.commit()
         return agent
 
+    async def rename_agent(
+        self, bus_id: str, old_id: str, new_id: str, avatar_url: str | None = None
+    ) -> dict | None:
+        """Change an agent's name in place, keeping its key and webhook.
+
+        Re-registering under a new name was the only way to do this, and it left
+        the old entry rotting on the roster. Messages already posted keep the old
+        author name — history is history.
+        """
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE agents SET agent_id = ?, avatar_url = COALESCE(?, avatar_url) "
+            "WHERE bus_id = ? AND agent_id = ? AND revoked_at IS NULL",
+            (new_id, avatar_url, bus_id, old_id),
+        )
+        await self._conn.commit()
+        return await self.get_agent(bus_id, new_id)
+
     async def revoke_all_agents(self, bus_id: str) -> list[dict]:
         """Revoke every active agent. Returns the rows so webhooks can be cleaned up."""
         assert self._conn
