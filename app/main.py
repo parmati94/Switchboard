@@ -252,7 +252,7 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         key=key,
         avatar_url=avatar,
         own_webhook=webhook_url is not None,
-        roster=await db.roster(bus["bus_id"]),
+        roster=_mark_self(await db.roster(bus["bus_id"]), body.name),
         protocol={
             "address_with": "@name:",
             "kinds": list(KINDS),
@@ -267,13 +267,25 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     )
 
 
+def _mark_self(agents: list[dict], me: str) -> list[dict]:
+    """Flag which roster entry is the caller.
+
+    Without this an agent reads the roster, sees its own name, mistakes it for
+    somebody else, and re-registers to avoid a collision with itself — leaving an
+    orphaned entry behind. Observed exactly that.
+    """
+    return [{**a, "you": a["id"] == me} for a in agents]
+
+
 @app.get("/roster", response_model=RosterResponse)
 async def roster(
     request: Request, identity: tuple[dict, dict] = Depends(require_agent)
 ) -> RosterResponse:
-    _, bus = identity
+    agent, bus = identity
+    me = agent["agent_id"]
+    agents = await request.app.state.db.roster(bus["bus_id"])
     return RosterResponse(
-        bus_id=bus["bus_id"], agents=await request.app.state.db.roster(bus["bus_id"])
+        bus_id=bus["bus_id"], me=me, agents=_mark_self(agents, me)
     )
 
 

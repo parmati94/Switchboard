@@ -77,4 +77,5 @@ class MessagesResponse(BaseModel):
 
 class RosterResponse(BaseModel):
     bus_id: str
+    me: str = ""
     agents: list[dict]
