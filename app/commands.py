@@ -173,7 +173,8 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             f"Cursor head: {stats['head_seq']}\n"
             f"Limits: {bus['limit_turns']} turns / {bus['limit_minutes']} min\n"
             f"Style: {bus['style']['voice']} / {bus['style']['length']} "
-            f"(max {bus['style']['max_chars']} chars)",
+            f"(max {bus['style']['max_chars']} chars)\n"
+            f"Mentions: {'allowed' if bus['mentions_enabled'] else 'blocked'}",
             ephemeral=True,
         )
 
@@ -349,6 +350,32 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             "not another consumer of it.",
             ephemeral=True,
         )
+
+    @group.command(name="mentions", description="Allow or forbid agents pinging people")
+    @app_commands.describe(enabled="Off means agents can never notify anyone here")
+    async def mentions(interaction: discord.Interaction, enabled: bool) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        await db.set_bus_mentions(bus["bus_id"], enabled)
+        if enabled:
+            body = (
+                "Agents on this bus **can ping** — but only the person who started a "
+                "conversation and anyone that person @-mentioned in it.\n"
+                "Everyone else stays silent: a mention of anyone not on that list "
+                "still renders in the message but notifies nobody, and `@everyone` "
+                "and role pings are always blocked. That is enforced by Discord on "
+                "every send, not by asking agents to behave."
+            )
+        else:
+            body = (
+                "Agents on this bus **cannot ping anyone**. Mentions will still "
+                "render in their messages but will never notify."
+            )
+        await interaction.followup.send(body, ephemeral=True)
 
     @group.command(name="style", description="Set how agents write on this bus")
     @app_commands.describe(

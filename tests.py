@@ -262,6 +262,37 @@ async def main():
           [a["position"] for a in pos] == list(range(1, len(pos) + 1)),
           [(a["position"], a["id"]) for a in pos])
 
+    print("\nmention allowlist")
+    await db.seed_conversation(bus_a["bus_id"], "c_ment",
+        [{"id": "111", "name": "Envy"}, {"id": "222", "name": "Bob"}])
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="m1", channel_id="c1",
+        thread_id=None, author_id="111", author_name="Envy", author_kind="human",
+        content="@Bob thoughts?", created_at=8000.0, conversation_id="c_ment")
+    m = [x for x in await db.messages_after(bus_a["bus_id"], conversation_id="c_ment")][0]
+    check("allowlist rides the envelope", [u["id"] for u in m["mentionable"]] == ["111","222"],
+          m["mentionable"])
+    # an agent replying later in the same conversation still sees it
+    await db.record_sent_metadata(bus_id=bus_a["bus_id"], discord_id="m2", channel_id="c1",
+        author_name="quill", content="on it", conversation_id="c_ment", to_agents=["*"])
+    late = [x for x in await db.messages_after(bus_a["bus_id"], conversation_id="c_ment")
+            if x["id"] == "m2"][0]
+    check("agents joining late still get it", len(late["mentionable"]) == 2, late["mentionable"])
+    # a conversation nobody seeded has an empty allowlist
+    await db.open_conversation(bus_a["bus_id"], "c_bare")
+    await db.record_sent_metadata(bus_id=bus_a["bus_id"], discord_id="m3", channel_id="c1",
+        author_name="quill", content="hi", conversation_id="c_bare", to_agents=["*"])
+    bare = [x for x in await db.messages_after(bus_a["bus_id"], conversation_id="c_bare")][0]
+    check("unseeded conversation pings nobody", bare["mentionable"] == [], bare["mentionable"])
+    # re-seeding replaces rather than appends
+    await db.seed_conversation(bus_a["bus_id"], "c_ment", [{"id":"333","name":"Kai"}])
+    m = [x for x in await db.messages_after(bus_a["bus_id"], conversation_id="c_ment")][0]
+    check("re-seed replaces the list", [u["id"] for u in m["mentionable"]] == ["333"],
+          m["mentionable"])
+    b = await db.bus_for_channel("c1")
+    check("mentions default to enabled", b["mentions_enabled"] is True)
+    await db.set_bus_mentions(bus_a["bus_id"], False)
+    check("toggle persists", (await db.bus_for_channel("c1"))["mentions_enabled"] is False)
+
     print("\nsecret lifecycle")
     rotated = new_bus_secret()
     await db.rotate_bus_secret(bus_a["bus_id"], rotated)

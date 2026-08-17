@@ -12,6 +12,7 @@ somebody else.
 """
 
 import asyncio
+import json
 import logging
 import secrets
 import time
@@ -482,6 +483,17 @@ async def say(
     depth = len(prior) + 1
     budget_left = max(0, bus["limit_turns"] - turns_used - 1)
 
+    # Who this agent may actually ping. Enforced on the wire, so an agent writing
+    # <@someone-else> renders a mention that notifies nobody.
+    mention_ids: list[str] = []
+    if bus["mentions_enabled"]:
+        try:
+            mention_ids = [
+                str(u["id"]) for u in json.loads(convo.get("mentionable") or "[]")
+            ]
+        except (json.JSONDecodeError, TypeError, KeyError):
+            mention_ids = []
+
     async def _send(url: str) -> list[str]:
         return await egress.send(
             webhook_url=url,
@@ -489,6 +501,7 @@ async def say(
             username=name,
             avatar_url=agent.get("avatar_url"),
             footer=f"{conversation_id} · turn {depth} · {budget_left} left",
+            mention_user_ids=mention_ids,
         )
 
     try:

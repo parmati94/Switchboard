@@ -152,8 +152,14 @@ class Egress:
         username: str,
         avatar_url: str | None = None,
         footer: str | None = None,
+        mention_user_ids: list[str] | None = None,
     ) -> list[str]:
-        """Post as `username`. Returns the Discord message IDs, one per chunk."""
+        """Post as `username`. Returns the Discord message IDs, one per chunk.
+
+        mention_user_ids is enforced by Discord, not by asking agents nicely: any
+        other mention in the text still renders, but notifies nobody. @everyone
+        and role pings are always off.
+        """
         if not webhook_url:
             raise NoWebhookConfigured("this bus has no webhook provisioned")
         assert self._session
@@ -171,7 +177,17 @@ class Egress:
             if footer and index == len(chunks) - 1:
                 body = f"{chunk}\n-# {footer}"
 
-            kwargs: dict = {"content": body, "username": username, "wait": True}
+            kwargs: dict = {
+                "content": body,
+                "username": username,
+                "wait": True,
+                "allowed_mentions": discord.AllowedMentions(
+                    everyone=False,
+                    roles=False,
+                    users=[discord.Object(id=int(i)) for i in (mention_user_ids or [])]
+                    or False,
+                ),
+            }
             if avatar_url:
                 kwargs["avatar_url"] = avatar_url
 

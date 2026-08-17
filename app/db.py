@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # Style has two independent axes. Length alone was not enough: capping characters
 # made agents terse without making them human, so a casual question came back
@@ -134,7 +134,11 @@ CREATE TABLE IF NOT EXISTS conversations (
     bus_id          TEXT NOT NULL,
     started_at      REAL NOT NULL,
     closed_at       REAL,
-    closed_reason   TEXT
+    closed_reason   TEXT,
+    -- Who agents may actually ping in this exchange: the human who started it
+    -- plus anyone they @-mentioned. JSON array of {id, name}. Enforced on the
+    -- wire via allowed_mentions, so it is not a rule agents can break.
+    mentionable     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_bus ON conversations(bus_id);
@@ -224,7 +228,17 @@ def _row_to_message(row: aiosqlite.Row) -> dict:
         "kind": row["kind"],
         "text": row["content"],
         "created_at": row["created_at"],
+        # Carried on every message in the exchange, so an agent joining late
+        # still knows who it may ping.
+        "mentionable": json.loads(row["mentionable"]) if _has(row, "mentionable") else [],
     }
+
+
+def _has(row: aiosqlite.Row, key: str) -> bool:
+    try:
+        return row[key] is not None
+    except (IndexError, KeyError):
+        return False
 
 
 def _row_to_bus(row: aiosqlite.Row) -> dict:
@@ -242,6 +256,7 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
         "default_budget": row["default_budget"],
         "limit_turns": row["limit_turns"],
         "limit_minutes": row["limit_minutes"],
+        "mentions_enabled": bool(row["mentions_enabled"]),
         "style": _style_for(row),
     }
 
@@ -316,10 +331,16 @@ class Database:
             ("style_voice", "TEXT NOT NULL DEFAULT 'neutral'"),
             ("style_max_chars", "INTEGER"),
             ("style_guidance", "TEXT"),
+            ("mentions_enabled", "INTEGER NOT NULL DEFAULT 1"),
         ):
             if column not in bus_cols:
                 log.info("migrating buses: adding %s", column)
                 await self._conn.execute(f"ALTER TABLE buses ADD COLUMN {column} {ddl}")
+
+        conversation_cols = await self._columns("conversations")
+        if "mentionable" not in conversation_cols:
+            log.info("migrating conversations: adding mentionable")
+            await self._conn.execute("ALTER TABLE conversations ADD COLUMN mentionable TEXT")
 
         await self._conn.commit()
 
@@ -435,6 +456,27 @@ class Database:
         await self._conn.commit()
 
     # ---- conversations ---------------------------------------------------
+
+    async def seed_conversation(
+        self, bus_id: str, conversation_id: str, mentionable: list[dict]
+    ) -> None:
+        """Open a conversation with its mention allowlist, from a human message."""
+        assert self._conn
+        await self._conn.execute(
+            "INSERT INTO conversations (conversation_id, bus_id, started_at, mentionable) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(conversation_id) DO UPDATE SET mentionable = excluded.mentionable",
+            (conversation_id, bus_id, time.time(), json.dumps(mentionable)),
+        )
+        await self._conn.commit()
+
+    async def set_bus_mentions(self, bus_id: str, enabled: bool) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE buses SET mentions_enabled = ? WHERE bus_id = ?",
+            (1 if enabled else 0, bus_id),
+        )
+        await self._conn.commit()
 
     async def open_conversation(self, bus_id: str, conversation_id: str) -> dict:
         """Idempotent. Returns the conversation's current state."""
@@ -747,12 +789,16 @@ class Database:
     ) -> list[dict]:
         """bus_id is positional and required — it is the isolation boundary."""
         assert self._conn
-        sql = "SELECT * FROM messages WHERE bus_id = ? AND seq > ?"
+        sql = (
+            "SELECT m.*, c.mentionable AS mentionable FROM messages m "
+            "LEFT JOIN conversations c ON m.conversation_id = c.conversation_id "
+            "WHERE m.bus_id = ? AND m.seq > ?"
+        )
         params: list = [bus_id, after]
         if conversation_id:
-            sql += " AND conversation_id = ?"
+            sql += " AND m.conversation_id = ?"
             params.append(conversation_id)
-        sql += " ORDER BY seq ASC LIMIT ?"
+        sql += " ORDER BY m.seq ASC LIMIT ?"
         params.append(min(limit, 200))
 
         async with self._conn.execute(sql, params) as cur:

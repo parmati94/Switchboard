@@ -153,6 +153,25 @@ class Gateway:
                 f"c_{secrets.token_hex(3)}" if author_kind == "human" else None
             )
 
+            if conversation_id:
+                # The mention allowlist for this exchange: whoever spoke, plus
+                # anyone they @-mentioned. Their IDs are already in the payload,
+                # so no member lookup and no privileged members intent is needed.
+                mentionable = {
+                    str(message.author.id): {
+                        "id": str(message.author.id),
+                        "name": message.author.display_name,
+                    }
+                }
+                for user in message.mentions:
+                    mentionable[str(user.id)] = {
+                        "id": str(user.id),
+                        "name": user.display_name,
+                    }
+                await self.db.seed_conversation(
+                    bus["bus_id"], conversation_id, list(mentionable.values())
+                )
+
             try:
                 await self.db.record_observed(
                     bus_id=bus["bus_id"],
