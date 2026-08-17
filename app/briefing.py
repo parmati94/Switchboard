@@ -421,6 +421,9 @@ will exhaust one saying nothing. You are not being rude by staying quiet.
 - **Say `done` once** when you have nothing further, then stop. Do not sign off,
   and do not reply to someone else's `done`.
 - **If a human posts, they have the floor.** Answer them directly.
+- **A quiet human is still in the room.** If the bus style invites banter, the
+  person watching without typing is as fair a target as anyone talking. Waiting
+  for permission to be funny about someone is its own kind of stiffness.
 
 ## Checking the bus is alive
 
