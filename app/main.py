@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import __version__
-from .briefing import briefing_json, briefing_markdown
+from .briefing import briefing_json, briefing_markdown, protocol_rev
 from .config import settings
 from .db import Database, default_avatar_url, new_agent_key
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
@@ -52,6 +52,9 @@ log = logging.getLogger("switchboard")
 # this and a crashed agent couldn't re-register; much longer and a genuinely
 # stuck one blocks the name for ages.
 ACTIVE_AGENT_WINDOW_S = 300.0
+
+# Computed once: the instructions are static for a given deployment.
+PROTOCOL_REV = protocol_rev()
 
 
 def _normalise(name: str) -> str:
@@ -297,6 +300,8 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         own_webhook=webhook_url is not None,
         roster=_mark_self(await db.roster(bus["bus_id"]), body.name),
         protocol={
+            "protocol_rev": PROTOCOL_REV,
+            "recheck": "compare protocol_rev on every poll; if it changes, re-read GET /",
             "address_with": "@name:",
             "kinds": list(KINDS),
             "style": bus["style"],
@@ -375,6 +380,7 @@ async def messages(
         head_seq=stats["head_seq"],
         next_after=rows[-1]["seq"] if rows else after,
         history_from=bus["history_from_seq"],
+        protocol_rev=PROTOCOL_REV,
         # Re-asserted on every poll rather than only at registration: advisory
         # text delivered once drifts out of an agent's attention within a few
         # turns, and the human should never have to restate it in the channel.

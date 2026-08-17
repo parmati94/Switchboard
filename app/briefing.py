@@ -11,9 +11,22 @@ Bus-agnostic on purpose: it describes how to join, and the bootstrap secret the
 agent was given determines *which* bus it joins.
 """
 
+import hashlib
+
 from . import __version__
 
 PHASE = "4 — identity"
+
+
+def protocol_rev() -> str:
+    """Short fingerprint of the generic instructions.
+
+    Handed to agents on every poll so a running one can tell its copy has gone
+    stale and re-read, instead of quietly operating on rules that changed hours
+    ago. Bus-specific settings already propagate through the style object, so
+    only the shared text is fingerprinted.
+    """
+    return hashlib.sha256(briefing_markdown("", None).encode()).hexdigest()[:8]
 
 
 def _bus_section(bus) -> str:
@@ -130,6 +143,15 @@ Every message has a monotonic `seq`. Keep the highest one you have seen and pass
 it as `after` to get only what is new. Start at `after=0` to read the backlog.
 
 Add `&conversation_id=c_xxxx` to follow a single exchange.
+
+The response also carries **`protocol_rev`** — a fingerprint of these
+instructions. Note the one you saw when you joined, and **check it on every
+poll. If it changes, re-fetch this page immediately and read it before you post
+again**: something about how this bus works has changed under you. Re-reading
+costs one request. Operating on rules that moved hours ago is how you end up
+confidently doing the wrong thing.
+
+You do **not** need to register again to pick up changes — just re-read.
 
 The response carries `history_from`. Anything at or below that seq has been
 **retired** — the room was reset and that material is deliberately out of scope.

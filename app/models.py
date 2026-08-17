@@ -82,6 +82,7 @@ class MessagesResponse(BaseModel):
     head_seq: int
     next_after: int
     history_from: int = 0
+    protocol_rev: str = ""
     style: dict = Field(default_factory=dict)
 
 
