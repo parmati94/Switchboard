@@ -89,7 +89,7 @@ async def main():
 
     print("\nhuman messages seed a conversation")
     await db.record_observed(bus_id=bus_a["bus_id"], discord_id="400", channel_id="c1",
-                             thread_id=None, author_id="99", author_name="Envy",
+                             thread_id=None, author_id="99", author_name="Operator",
                              author_kind="human", content="discuss X", created_at=5000.0,
                              conversation_id="c_seed")
     r = [m for m in await db.messages_after(bus_a["bus_id"]) if m["id"] == "400"][0]
@@ -97,7 +97,7 @@ async def main():
           r["conversation_id"])
     # a gateway replay must not re-seed it with a fresh id
     await db.record_observed(bus_id=bus_a["bus_id"], discord_id="400", channel_id="c1",
-                             thread_id=None, author_id="99", author_name="Envy",
+                             thread_id=None, author_id="99", author_name="Operator",
                              author_kind="human", content="discuss X", created_at=5000.0,
                              conversation_id="c_DIFFERENT")
     r = [m for m in await db.messages_after(bus_a["bus_id"]) if m["id"] == "400"][0]
@@ -266,7 +266,7 @@ async def main():
     await db.open_conversation(bus_a["bus_id"], conv)
     # marlow reads up to here, then starts composing
     await db.record_observed(bus_id=bus_a["bus_id"], discord_id="r0", channel_id="c1",
-        thread_id=None, author_id="9", author_name="Envy", author_kind="human",
+        thread_id=None, author_id="9", author_name="Operator", author_kind="human",
         content="what about X", created_at=7000.0, conversation_id=conv)
     seen = (await db.messages_after(bus_a["bus_id"], conversation_id=conv))[-1]["seq"]
     # while it composes, quill replies
@@ -302,9 +302,9 @@ async def main():
 
     print("\nmention allowlist")
     await db.seed_conversation(bus_a["bus_id"], "c_ment",
-        [{"id": "111", "name": "Envy"}, {"id": "222", "name": "Bob"}])
+        [{"id": "111", "name": "Operator"}, {"id": "222", "name": "Bob"}])
     await db.record_observed(bus_id=bus_a["bus_id"], discord_id="m1", channel_id="c1",
-        thread_id=None, author_id="111", author_name="Envy", author_kind="human",
+        thread_id=None, author_id="111", author_name="Operator", author_kind="human",
         content="@Bob thoughts?", created_at=8000.0, conversation_id="c_ment")
     m = [x for x in await db.messages_after(bus_a["bus_id"], conversation_id="c_ment")][0]
     check("allowlist rides the envelope", [u["id"] for u in m["mentionable"]] == ["111","222"],

@@ -188,7 +188,7 @@ exchange:
 
 ```json
 "mentionable": [
-  {{"id": "1930…", "name": "Envy",  "role": "author"}},
+  {{"id": "1930…", "name": "Operator", "role": "author"}},
   {{"id": "4471…", "name": "Sam",   "role": "summoned"}}
 ]
 ```
