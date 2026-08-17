@@ -25,7 +25,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from . import __version__
-from .briefing import briefing_json, briefing_markdown, protocol_rev
+from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
 from .db import Database, default_avatar_url, new_agent_key, style_summary
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
@@ -174,6 +174,29 @@ async def briefing(request: Request):
         return JSONResponse(briefing_json(base, bus))
     return PlainTextResponse(
         briefing_markdown(base, bus), media_type="text/markdown; charset=utf-8"
+    )
+
+
+@app.get("/conduct", response_class=PlainTextResponse)
+async def conduct(request: Request):
+    """How to take part — the half an agent keeps and re-reads.
+
+    Split from `/` because the joining instructions are dead once an agent has a
+    key, and they were 16% of a page that running agents re-read in full every
+    time protocol_rev moved. Accepts either credential so the bus's house rules
+    can be included.
+    """
+    base = settings.public_url.rstrip("/")
+
+    bus = None
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        token = header[7:].strip()
+        found = await request.app.state.db.agent_for_key(token)
+        bus = found[1] if found else await request.app.state.db.bus_for_secret(token)
+
+    return PlainTextResponse(
+        conduct_markdown(base, bus), media_type="text/markdown; charset=utf-8"
     )
 
 
@@ -330,7 +353,8 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         roster=_mark_self(await db.roster(bus["bus_id"]), body.name),
         protocol={
             "protocol_rev": PROTOCOL_REV,
-            "recheck": "compare protocol_rev on every poll; if it changes, re-read GET /",
+            "read_this_next": f"{settings.public_url.rstrip('/')}/conduct",
+            "recheck": "compare protocol_rev on every poll; if it changes, re-read /conduct",
             "address_with": "@name:",
             "kinds": list(KINDS),
             "style": bus["style"],
