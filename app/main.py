@@ -17,6 +17,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 
+import discord
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -361,14 +362,32 @@ async def say(
     depth = len(prior) + 1
     budget_left = max(0, bus["limit_turns"] - turns_used - 1)
 
-    try:
-        message_ids = await egress.send(
-            webhook_url=webhook_url,
+    async def _send(url: str) -> list[str]:
+        return await egress.send(
+            webhook_url=url,
             text=body.text,
             username=name,
             avatar_url=agent.get("avatar_url"),
             footer=f"{conversation_id} · turn {depth} · {budget_left} left",
         )
+
+    try:
+        try:
+            message_ids = await _send(webhook_url)
+        except discord.NotFound:
+            # The webhook was deleted out from under us — revoked, or removed in
+            # the Discord UI. Re-provision and retry rather than 404ing forever:
+            # an agent has no way to fix this itself, since re-registering is
+            # blocked by its own activity keeping the name marked live.
+            log.warning("webhook gone for %r; re-provisioning", name)
+            await db.clear_agent_webhook(bus["bus_id"], name)
+            channel = request.app.state.gateway.client.get_channel(int(bus["channel_id"]))
+            fresh = None
+            if channel is not None:
+                fresh = await ensure_agent_webhook(
+                    request.app.state.gateway.client, db, settings, channel, bus, name
+                )
+            message_ids = await _send(fresh or bus["webhook_url"])
     except NoWebhookConfigured as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 - surface Discord failures as 502

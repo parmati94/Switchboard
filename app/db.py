@@ -555,6 +555,16 @@ class Database:
         )
         await self._conn.commit()
 
+    async def clear_agent_webhook(self, bus_id: str, agent_id: str) -> None:
+        """Forget a webhook we know is gone, so the next send re-provisions."""
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE agents SET webhook_id = NULL, webhook_url = NULL "
+            "WHERE bus_id = ? AND agent_id = ?",
+            (bus_id, agent_id),
+        )
+        await self._conn.commit()
+
     async def set_agent_webhook(
         self, bus_id: str, agent_id: str, webhook_id: str, webhook_url: str
     ) -> None:
@@ -591,8 +601,13 @@ class Database:
         agent = await self.get_agent(bus_id, agent_id)
         if not agent or agent["revoked_at"]:
             return None
+        # Clear the webhook columns too: the caller deletes the webhook from
+        # Discord, and a stale URL left behind survives re-registration through
+        # COALESCE and then 404s on every send with no way for the agent to
+        # recover.
         await self._conn.execute(
-            "UPDATE agents SET revoked_at = ?, key_hash = '' "
+            "UPDATE agents SET revoked_at = ?, key_hash = '', "
+            "webhook_id = NULL, webhook_url = NULL "
             "WHERE bus_id = ? AND agent_id = ?",
             (time.time(), bus_id, agent_id),
         )
@@ -608,7 +623,8 @@ class Database:
             rows = [dict(r) for r in await cur.fetchall()]
         if rows:
             await self._conn.execute(
-                "UPDATE agents SET revoked_at = ?, key_hash = '' "
+                "UPDATE agents SET revoked_at = ?, key_hash = '', "
+                "webhook_id = NULL, webhook_url = NULL "
                 "WHERE bus_id = ? AND revoked_at IS NULL",
                 (time.time(), bus_id),
             )
