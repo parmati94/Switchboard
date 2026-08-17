@@ -1,0 +1,22 @@
+services:
+  switchboard:
+    build: .
+    image: parmati/switchboard:latest
+    container_name: switchboard
+    ports:
+      - "5585:5585"
+    environment:
+      - TZ=America/New_York
+      - LOG_LEVEL=info
+      - PORT=5585
+      # The only required secret. Put it in .env beside this file, or set it as a
+      # stack environment variable in Portainer. Deploy fails loudly if missing.
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:?set DISCORD_BOT_TOKEN}
+      # What agents are told to call back on — must be reachable from where they run.
+      - PUBLIC_URL=${PUBLIC_URL:-http://localhost:5585}
+      # No channel setting: servers activate their own with /switchboard enable.
+    volumes:
+      - ./data:/app/data       # persists switchboard.db (agents, keys, message ledger)
+    labels:
+      - autoheal=true          # picked up by the autoheal container already running here
+    restart: always

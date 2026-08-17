@@ -1,0 +1,153 @@
+"""The control plane — slash commands.
+
+Configuration lives in Discord rather than in env vars, which means Discord's
+permission model *is* the auth model: the person allowed to configure a bus is
+whoever Discord already says can manage the server. No login, no admin UI.
+
+Every command is gated on Manage Server and replies ephemerally, so bootstrap
+secrets are delivered to one person and never enter channel history.
+
+Bots cannot invoke application commands, so this surface is structurally
+human-only. Agents use the HTTP API.
+"""
+
+import logging
+
+import discord
+from discord import app_commands
+
+from .db import new_bus_secret
+from .egress import ensure_bus_webhook
+
+log = logging.getLogger("switchboard.commands")
+
+
+def _no_bus_message() -> str:
+    return (
+        "No bus in this channel. Run `/switchboard enable` here to activate one."
+    )
+
+
+def build_tree(client: discord.Client, db, settings) -> app_commands.CommandTree:
+    tree = app_commands.CommandTree(client)
+
+    group = app_commands.Group(
+        name="switchboard",
+        description="Manage this channel's agent bus",
+        default_permissions=discord.Permissions(manage_guild=True),
+        guild_only=True,
+    )
+
+    @group.command(name="enable", description="Activate this channel as an agent bus")
+    async def enable(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.followup.send(
+                "Run this in a normal text channel — threads and DMs can't host a bus.",
+                ephemeral=True,
+            )
+            return
+
+        existing = await db.bus_for_channel(str(channel.id))
+        if existing and existing["enabled"]:
+            await interaction.followup.send(
+                f"This channel is already a bus (`{existing['bus_id']}`).\n"
+                "Use `/switchboard status` to inspect it, or `/switchboard rotate` "
+                "for a new secret. Re-enabling would invalidate your agents' credentials.",
+                ephemeral=True,
+            )
+            return
+
+        secret = new_bus_secret()
+        bus = await db.create_bus(
+            guild_id=str(interaction.guild_id),
+            channel_id=str(channel.id),
+            guild_name=interaction.guild.name if interaction.guild else "",
+            channel_name=channel.name,
+            created_by=str(interaction.user.id),
+            secret=secret,
+        )
+
+        try:
+            await ensure_bus_webhook(client, db, settings, channel, bus)
+        except discord.Forbidden:
+            await db.set_bus_enabled(bus["bus_id"], False)
+            await interaction.followup.send(
+                "I need **Manage Webhooks** in this channel to speak on agents' behalf. "
+                "Grant it and run `/switchboard enable` again.",
+                ephemeral=True,
+            )
+            return
+
+        base = settings.public_url.rstrip("/")
+        await interaction.followup.send(
+            f"**Bus enabled** in {channel.mention} — `{bus['bus_id']}`\n\n"
+            "Give an agent this one line and it will onboard itself:\n"
+            f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
+            "Read the root path first.\n```\n"
+            "This secret is shown **once**. `/switchboard rotate` issues a new one.",
+            ephemeral=True,
+        )
+        log.info("bus %s enabled in %s/#%s", bus["bus_id"], interaction.guild_id, channel.name)
+
+    @group.command(name="disable", description="Stop relaying in this channel")
+    async def disable(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        await db.set_bus_enabled(bus["bus_id"], False)
+        await interaction.followup.send(
+            f"Bus `{bus['bus_id']}` disabled. History is kept and agent credentials "
+            "still exist — `/switchboard enable` resumes without re-onboarding.",
+            ephemeral=True,
+        )
+
+    @group.command(name="status", description="Show this bus's state")
+    async def status(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        stats = await db.bus_stats(bus["bus_id"])
+        state = "enabled" if bus["enabled"] else "disabled"
+        speaks = "yes" if bus["webhook_url"] else "no — missing Manage Webhooks"
+
+        await interaction.followup.send(
+            f"**Bus `{bus['bus_id']}`** — {state}\n"
+            f"Channel: <#{bus['channel_id']}>\n"
+            f"Can speak: {speaks}\n"
+            f"Messages recorded: {stats['messages_stored']}\n"
+            f"Cursor head: {stats['head_seq']}\n"
+            f"Default budget: {bus['default_budget']} turns",
+            ephemeral=True,
+        )
+
+    @group.command(name="rotate", description="Issue a new bootstrap secret")
+    async def rotate(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        secret = new_bus_secret()
+        await db.rotate_bus_secret(bus["bus_id"], secret)
+        base = settings.public_url.rstrip("/")
+        await interaction.followup.send(
+            f"**New bootstrap secret** for `{bus['bus_id']}`. The previous one no "
+            "longer works, so anything using it must be given this:\n"
+            f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
+            "Read the root path first.\n```",
+            ephemeral=True,
+        )
+        log.info("bus %s secret rotated", bus["bus_id"])
+
+    tree.add_command(group)
+    return tree
