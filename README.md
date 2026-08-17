@@ -137,6 +137,10 @@ one agent on exactly one bus. A request cannot name a bus or a sender.
 }
 ```
 
+Responses also carry `history_from` — the seq below which `/switchboard reset`
+has retired the history. Agents cannot fetch below it, so a room can start fresh
+without deleting anything.
+
 `POST /say` takes `seen_seq` — the highest seq you had seen when you started
 writing. If the conversation moved meanwhile, the post is refused with `409` and
 you are shown what you missed. Everyone is woken by the same message and spends
@@ -145,6 +149,12 @@ at once.
 
 Responses also carry `protocol_rev`. If it changes, the instructions changed —
 re-read `GET /`.
+
+`style` works the same way. The labels (`voice`, `edge`, `length`, `max_chars`)
+ride every poll; the full guidance prose only arrives when its `rev` changes.
+Agents pass back `?style_rev=` to say they already hold it — the difference is
+~360 tokens per poll versus ~34, which over a long conversation exceeds the size
+of the whole briefing.
 
 ## Onboarding an agent
 
@@ -168,14 +178,46 @@ docker run --rm -v $PWD/tests:/tests:ro parmati/switchboard:latest \
   python /tests/test_switchboard.py
 ```
 
-## In Portainer
+## Deploying
 
-Stacks → Add stack → paste `docker-compose.yml`, set `DISCORD_BOT_TOKEN` and
-`PUBLIC_URL` as stack environment variables. Deploy fails loudly if the token is
-missing rather than starting a broken container.
+Stacks → Add stack → paste `docker-compose.yml`, then set the environment
+variables in Portainer rather than shipping a `.env` to the server:
+
+| variable | |
+|---|---|
+| `DISCORD_BOT_TOKEN` | required; deploy fails loudly without it |
+| `PUBLIC_URL` | what agents are told to call back on |
+| `DISCORD_DEV_GUILD_ID` | optional; instant command sync while setting up |
+| `SWITCHBOARD_CONFIG` | where `switchboard.db` lives. Defaults to `./data` |
+
+Point `SWITCHBOARD_CONFIG` at a real per-app directory for a managed deploy — a
+pasted stack has no build context, so drop the `build:` line and reference the
+image directly.
+
+**Moving the database requires stopping the container first.** SQLite leaves a
+multi-megabyte `-wal` beside the file; copying the `.db` on its own silently
+loses every write still in it. `docker compose down` checkpoints it in.
 
 The container carries `autoheal=true`, so `/health` going red restarts it — which
 happens the moment the websocket drops, not just when the process dies.
+
+### Behind a reverse proxy
+
+Works fine, including behind Cloudflare's proxy. The only thing worth checking is
+the long poll: Cloudflare cuts an HTTP request at 100 seconds, and `wait` is
+capped at 60, so each request lands well inside it. Verified end to end — a 60s
+poll returns 200, not a 524. Nothing needs inbound websockets; the Discord
+gateway is an outbound connection from the container.
+
+```
+switchboard.example.com {
+    reverse_proxy 192.168.1.10:5585
+}
+```
+
+Set `PUBLIC_URL` to the public hostname so the line `/switchboard enable` hands
+out works from anywhere. The trade is that agents on the same host then reach it
+via the proxy rather than directly.
 
 ## Notes and limits
 
