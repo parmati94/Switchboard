@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -47,8 +47,10 @@ NAMING_PRESETS = {
         "Pick a crude, juvenile, off-colour handle — the kind of thing people used "
         "on gaming forums in 2004. FuckFace007, ButtSoup, DongleWizard. Profanity "
         "and innuendo are welcome and the ruder the funnier. "
-        "Two hard limits: no slurs of any kind, and nothing aimed at a real person. "
-        "Vulgar is the point; abusive is not."
+        "Two limits, and they are about the name only: no slurs, and don't make "
+        "your handle a dig at a specific person — it is what you are called, not a "
+        "comment on someone. Ribbing people in conversation is a different thing "
+        "and is entirely welcome."
     ),
 }
 DEFAULT_NAMING = "human"
@@ -65,7 +67,9 @@ VOICE_PRESETS = {
             "opinions, humour, blunt disagreement. No headings, no bullet lists, no "
             "hedging, no 'the distinction is structural rather than X'. Say the thing. "
             "Reacting to what someone said with a short agreement or a joke is fine "
-            "here — banter is the point, not noise."
+            "here — banter is the point, not noise. Rib the others and the humans in "
+            "the room, and pile on when it is funny; people here can give it back. "
+            "Keep it off slurs and off anyone who is not present to answer."
         ),
         "naming_hint": (
             "Pick a name a person might use in a group chat — short and a bit of "
@@ -145,6 +149,8 @@ CREATE TABLE IF NOT EXISTS buses (
     -- agent that is stuck or merely slow. Whichever trips first wins.
     limit_turns    INTEGER NOT NULL DEFAULT 20,
     limit_minutes  INTEGER NOT NULL DEFAULT 10,
+    -- Budget for banter: a conversation no human started.
+    limit_agent_turns INTEGER NOT NULL DEFAULT 6,
     -- How it reads. Delivered to agents at registration and on every poll, so
     -- the human never has to relay it.
     style_preset   TEXT    NOT NULL DEFAULT 'normal',
@@ -162,6 +168,10 @@ CREATE TABLE IF NOT EXISTS conversations (
     started_at      REAL NOT NULL,
     closed_at       REAL,
     closed_reason   TEXT,
+    -- 'human' or 'agent'. Banter among agents is welcome — it is most of the
+    -- charm — but it gets a smaller budget than a topic a person actually
+    -- raised, so a hello cannot run the room dry before the human arrives.
+    seeded_by       TEXT NOT NULL DEFAULT 'agent',
     -- Who agents may actually ping in this exchange: the human who started it
     -- plus anyone they @-mentioned. JSON array of {id, name}. Enforced on the
     -- wire via allowed_mentions, so it is not a rule agents can break.
@@ -283,6 +293,7 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
         "default_budget": row["default_budget"],
         "limit_turns": row["limit_turns"],
         "limit_minutes": row["limit_minutes"],
+        "limit_agent_turns": row["limit_agent_turns"],
         "mentions_enabled": bool(row["mentions_enabled"]),
         "style": _style_for(row),
     }
@@ -362,6 +373,7 @@ class Database:
             ("style_guidance", "TEXT"),
             ("mentions_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("style_naming", "TEXT"),
+            ("limit_agent_turns", "INTEGER NOT NULL DEFAULT 6"),
         ):
             if column not in bus_cols:
                 log.info("migrating buses: adding %s", column)
@@ -371,6 +383,11 @@ class Database:
         if "mentionable" not in conversation_cols:
             log.info("migrating conversations: adding mentionable")
             await self._conn.execute("ALTER TABLE conversations ADD COLUMN mentionable TEXT")
+        if "seeded_by" not in conversation_cols:
+            log.info("migrating conversations: adding seeded_by")
+            await self._conn.execute(
+                "ALTER TABLE conversations ADD COLUMN seeded_by TEXT NOT NULL DEFAULT 'agent'"
+            )
 
         await self._conn.commit()
 
@@ -461,11 +478,14 @@ class Database:
         ) as cur:
             return (await cur.fetchone())["n"]
 
-    async def set_bus_limits(self, bus_id: str, turns: int, minutes: int) -> None:
+    async def set_bus_limits(
+        self, bus_id: str, turns: int, minutes: int, agent_turns: int
+    ) -> None:
         assert self._conn
         await self._conn.execute(
-            "UPDATE buses SET limit_turns = ?, limit_minutes = ? WHERE bus_id = ?",
-            (turns, minutes, bus_id),
+            "UPDATE buses SET limit_turns = ?, limit_minutes = ?, limit_agent_turns = ? "
+            "WHERE bus_id = ?",
+            (turns, minutes, agent_turns, bus_id),
         )
         await self._conn.commit()
 
@@ -494,9 +514,11 @@ class Database:
         """Open a conversation with its mention allowlist, from a human message."""
         assert self._conn
         await self._conn.execute(
-            "INSERT INTO conversations (conversation_id, bus_id, started_at, mentionable) "
-            "VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(conversation_id) DO UPDATE SET mentionable = excluded.mentionable",
+            "INSERT INTO conversations "
+            "(conversation_id, bus_id, started_at, mentionable, seeded_by) "
+            "VALUES (?, ?, ?, ?, 'human') "
+            "ON CONFLICT(conversation_id) DO UPDATE SET "
+            "mentionable = excluded.mentionable, seeded_by = 'human'",
             (conversation_id, bus_id, time.time(), json.dumps(mentionable)),
         )
         await self._conn.commit()

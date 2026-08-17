@@ -465,9 +465,20 @@ async def say(
     # the channel. Turns bound cost, minutes rescue a stuck or slow exchange.
     turns_used = await db.agent_turns_used(bus["bus_id"], conversation_id)
     elapsed_min = (time.time() - convo["started_at"]) / 60.0
+
+    # A conversation no human started gets a much smaller budget. Otherwise an
+    # agent's hello becomes a thread the others pile into, and a room burns
+    # through its turns on banter before the human has typed anything.
+    human_seeded = convo.get("seeded_by") == "human"
+    turn_limit = bus["limit_turns"] if human_seeded else bus["limit_agent_turns"]
+
     exhausted = None
-    if turns_used >= bus["limit_turns"]:
-        exhausted = f"reached the {bus['limit_turns']}-turn limit"
+    if turns_used >= turn_limit:
+        exhausted = (
+            f"reached the {turn_limit}-turn limit"
+            if human_seeded
+            else f"reached the {turn_limit}-turn limit for conversations no human started"
+        )
     elif elapsed_min >= bus["limit_minutes"]:
         exhausted = f"ran past the {bus['limit_minutes']}-minute limit"
 
@@ -493,7 +504,7 @@ async def say(
         bus["bus_id"], after=0, limit=200, conversation_id=conversation_id
     )
     depth = len(prior) + 1
-    budget_left = max(0, bus["limit_turns"] - turns_used - 1)
+    budget_left = max(0, turn_limit - turns_used - 1)
 
     # Who this agent may actually ping. Enforced on the wire, so an agent writing
     # <@someone-else> renders a mention that notifies nobody.

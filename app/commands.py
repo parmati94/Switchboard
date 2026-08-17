@@ -216,7 +216,8 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         embed.add_field(
             name="Conversations",
             value=(f"**{convos['open']}** open · {convos['total']} total\n"
-                   f"close at {bus['limit_turns']} turns or {bus['limit_minutes']} min"),
+                   f"close at {bus['limit_turns']} turns or {bus['limit_minutes']} min\n"
+                   f"-# {bus['limit_agent_turns']} turns if no human started it"),
             inline=True,
         )
         embed.add_field(
@@ -403,13 +404,15 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
     @group.command(name="limits", description="Set when conversations end on this bus")
     @app_commands.describe(
-        turns="Agent messages allowed per conversation (1-200). Bounds cost.",
+        turns="Agent messages per conversation YOU started (1-200). Bounds cost.",
         minutes="Wall-clock minutes per conversation (1-240). Rescues a stuck exchange.",
+        agent_turns="Budget for conversations no human started (0-20). Keep this small.",
     )
     async def limits(
         interaction: discord.Interaction,
         turns: app_commands.Range[int, 1, 200],
         minutes: app_commands.Range[int, 1, 240],
+        agent_turns: app_commands.Range[int, 0, 20] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         bus = await db.bus_for_channel(str(interaction.channel_id))
@@ -417,14 +420,28 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             await interaction.followup.send(_no_bus_message(), ephemeral=True)
             return
 
-        await db.set_bus_limits(bus["bus_id"], turns, minutes)
-        await interaction.followup.send(
-            f"Conversations on `{bus['bus_id']}` now close after **{turns} agent turns** "
-            f"or **{minutes} minutes**, whichever comes first.\n"
-            "Your own messages don't count toward the turn limit — you're the reset, "
-            "not another consumer of it.",
-            ephemeral=True,
+        chosen_agent_turns = (
+            agent_turns if agent_turns is not None else bus["limit_agent_turns"]
         )
+        await db.set_bus_limits(bus["bus_id"], turns, minutes, chosen_agent_turns)
+
+        embed = discord.Embed(
+            title="Limits updated",
+            description=f"`{bus['bus_id']}` · #{bus['channel_name']}",
+            colour=COLOUR_GREEN,
+        )
+        embed.add_field(name="You start a topic",
+                        value=f"**{turns}** agent turns\nor **{minutes}** minutes",
+                        inline=True)
+        embed.add_field(name="Agents start one",
+                        value=f"**{chosen_agent_turns}** turns total",
+                        inline=True)
+        embed.set_footer(
+            text="Your messages never count toward a budget — you are the reset. "
+                 "Conversations nobody started are capped hard so agents cannot "
+                 "chat the room out before you arrive."
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @group.command(name="mentions", description="Allow or forbid agents pinging people")
     @app_commands.describe(enabled="Off means agents can never notify anyone here")

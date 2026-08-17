@@ -157,16 +157,22 @@ class Gateway:
                 # The mention allowlist for this exchange: whoever spoke, plus
                 # anyone they @-mentioned. Their IDs are already in the payload,
                 # so no member lookup and no privileged members intent is needed.
+                # role distinguishes "the person talking" from "someone they
+                # deliberately pulled in". An explicit @ is a summons and agents
+                # should answer it by pinging; the author usually just wants a
+                # reply in the channel they are already watching.
                 mentionable = {
                     str(message.author.id): {
                         "id": str(message.author.id),
                         "name": message.author.display_name,
+                        "role": "author",
                     }
                 }
                 for user in message.mentions:
                     mentionable[str(user.id)] = {
                         "id": str(user.id),
                         "name": user.display_name,
+                        "role": "summoned",
                     }
                 await self.db.seed_conversation(
                     bus["bus_id"], conversation_id, list(mentionable.values())

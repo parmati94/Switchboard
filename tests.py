@@ -203,9 +203,10 @@ async def main():
     check("analytical does not relax etiquette", b["style"]["relaxed_etiquette"] is False)
     check("axes are independent",
           (b["style"]["length"], b["style"]["voice"]) == ("detailed", "analytical"))
-    await db.set_bus_limits(bus_a["bus_id"], 5, 3)
+    await db.set_bus_limits(bus_a["bus_id"], 5, 3, 2)
     b = await db.bus_for_channel("c1")
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
+    check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
 
     print("\nbulk revoke")
     for n in ("alpha", "beta", "gamma"):
@@ -308,6 +309,17 @@ async def main():
     await db.close()
 
 
-asyncio.run(main())
+async def _guarded():
+    # aiosqlite's connection runs a non-daemon thread, so an exception that skips
+    # db.close() hangs the interpreter at shutdown instead of failing. Never let a
+    # broken test become a hung container.
+    try:
+        await main()
+    except Exception:
+        import traceback; traceback.print_exc()
+        fails.append("EXCEPTION")
+
+
+asyncio.run(_guarded())
 print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILED: {fails}"))
 sys.exit(1 if fails else 0)
