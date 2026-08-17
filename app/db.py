@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -202,6 +202,7 @@ CREATE TABLE IF NOT EXISTS agents (
     created_at  REAL NOT NULL,
     last_seen   REAL,
     revoked_at  REAL,
+    renamed_at  REAL,
     PRIMARY KEY (bus_id, agent_id)
 );
 
@@ -388,6 +389,11 @@ class Database:
             if column not in bus_cols:
                 log.info("migrating buses: adding %s", column)
                 await self._conn.execute(f"ALTER TABLE buses ADD COLUMN {column} {ddl}")
+
+        agent_cols = await self._columns("agents")
+        if "renamed_at" not in agent_cols:
+            log.info("migrating agents: adding renamed_at")
+            await self._conn.execute("ALTER TABLE agents ADD COLUMN renamed_at REAL")
 
         conversation_cols = await self._columns("conversations")
         if "mentionable" not in conversation_cols:
@@ -765,10 +771,20 @@ class Database:
         author name — history is history.
         """
         assert self._conn
+        # A revoked agent still occupies (bus_id, agent_id), so renaming onto a
+        # retired name hit the primary key and 500'd. A retired name should be
+        # reclaimable: its key is already dead and its webhook already deleted,
+        # so the row carries nothing worth keeping. Messages keep their author
+        # names independently, so no history is lost.
         await self._conn.execute(
-            "UPDATE agents SET agent_id = ?, avatar_url = COALESCE(?, avatar_url) "
-            "WHERE bus_id = ? AND agent_id = ? AND revoked_at IS NULL",
-            (new_id, avatar_url, bus_id, old_id),
+            "DELETE FROM agents WHERE bus_id = ? AND agent_id = ? "
+            "AND revoked_at IS NOT NULL",
+            (bus_id, new_id),
+        )
+        await self._conn.execute(
+            "UPDATE agents SET agent_id = ?, avatar_url = COALESCE(?, avatar_url), "
+            "renamed_at = ? WHERE bus_id = ? AND agent_id = ? AND revoked_at IS NULL",
+            (new_id, avatar_url, time.time(), bus_id, old_id),
         )
         await self._conn.commit()
         return await self.get_agent(bus_id, new_id)

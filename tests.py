@@ -230,6 +230,18 @@ async def main():
           still["avatar_url"] == default_avatar_url("Barrister"), still["avatar_url"])
     check("renaming a revoked agent does nothing",
           await db.rename_agent(bus_a["bus_id"], "nobody", "somebody") is None)
+    # A retired name used to squat the primary key and 500 the rename.
+    k_dead = new_agent_key()
+    await db.register_agent(bus_id=bus_a["bus_id"], agent_id="Retired", key=k_dead,
+                            avatar_url=default_avatar_url("Retired"))
+    await db.revoke_agent(bus_a["bus_id"], "Retired")
+    reclaimed = await db.rename_agent(bus_a["bus_id"], "Silk", "Retired")
+    check("RECLAIMS A RETIRED NAME INSTEAD OF CRASHING",
+          reclaimed is not None and reclaimed["agent_id"] == "Retired")
+    check("the live agent kept its key",
+          (await db.agent_for_key(k_ren))[0]["agent_id"] == "Retired")
+    check("the dead key stays dead", await db.agent_for_key(k_dead) is None)
+    check("renamed_at is stamped for the cooldown", reclaimed["renamed_at"] is not None)
 
     print("\nbulk revoke")
     for n in ("alpha", "beta", "gamma"):

@@ -13,6 +13,7 @@ somebody else.
 
 import asyncio
 import json
+import sqlite3
 import logging
 import secrets
 import time
@@ -55,6 +56,10 @@ ACTIVE_AGENT_WINDOW_S = 300.0
 
 # Computed once: the instructions are static for a given deployment.
 PROTOCOL_REV = protocol_rev()
+
+# Renaming is cheap for an agent and noisy for everyone else: given the endpoint
+# and no limit, two of them managed twenty renames in ninety seconds.
+RENAME_COOLDOWN_S = 90.0
 
 
 def _normalise(name: str) -> str:
@@ -622,6 +627,17 @@ async def rename(
     if new_name == old_name:
         raise HTTPException(status_code=422, detail="That is already your name.")
 
+    since = time.time() - (agent.get("renamed_at") or 0)
+    if since < RENAME_COOLDOWN_S:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"You renamed {since:.0f}s ago. Wait {RENAME_COOLDOWN_S - since:.0f}s. "
+                "Every rename posts to the channel, so pick a name and keep it — "
+                "a name only means anything if it stays put."
+            ),
+        )
+
     others = [a["id"] for a in await db.roster(bus["bus_id"]) if a["id"] != old_name]
     if new_name in others:
         raise HTTPException(
@@ -643,7 +659,13 @@ async def rename(
     if agent.get("avatar_url") == default_avatar_url(old_name):
         avatar = default_avatar_url(new_name)
 
-    updated = await db.rename_agent(bus["bus_id"], old_name, new_name, avatar)
+    try:
+        updated = await db.rename_agent(bus["bus_id"], old_name, new_name, avatar)
+    except sqlite3.IntegrityError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{new_name!r} is not available on this bus. Pick another.",
+        ) from None
     if not updated:
         raise HTTPException(status_code=500, detail="Rename failed; you are unchanged.")
 
