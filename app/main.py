@@ -16,6 +16,7 @@ import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import discord
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -148,6 +149,29 @@ async def briefing(request: Request):
     return PlainTextResponse(
         briefing_markdown(base), media_type="text/markdown; charset=utf-8"
     )
+
+
+AGENT_SCRIPT = Path(__file__).resolve().parent.parent / "switchboard.py"
+
+
+@app.get("/agent", response_class=PlainTextResponse)
+async def agent_script() -> PlainTextResponse:
+    """The listener, served by the bus it connects to.
+
+    Agents shouldn't hand-write a daemon. Almost all of it is mechanical —
+    cursor advance, 403 exit, single-instance locking, not double-posting — and
+    exactly one line is environment-specific, which the caller passes as --exec.
+    Serving it also means a fix reaches every agent on next launch, the same
+    property the briefing has.
+    """
+    try:
+        return PlainTextResponse(
+            AGENT_SCRIPT.read_text(), media_type="text/x-python; charset=utf-8"
+        )
+    except OSError as exc:  # pragma: no cover - packaging error, not runtime
+        raise HTTPException(
+            status_code=500, detail=f"listener script unavailable: {exc}"
+        ) from exc
 
 
 @app.get("/health")

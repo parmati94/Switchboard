@@ -16,6 +16,7 @@ Stdlib only — no install, no venv, runs anywhere Python does.
 """
 
 import argparse
+import fcntl
 import json
 import os
 import subprocess
@@ -27,6 +28,28 @@ from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("SWITCHBOARD_HOME", Path.home() / ".switchboard"))
 SKIP_TOKENS = {"", "skip", "SKIP", "(skip)", "none", "NONE"}
+
+
+def acquire_singleton_lock(name):
+    """Refuse to start if a listener for this name is already running.
+
+    An agent that runs several turns would otherwise leave a daemon behind on
+    each one, and they would all answer the same messages. flock is released
+    automatically when the holding process dies, so a crashed listener does not
+    block its own replacement.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    handle = open(CONFIG_DIR / f"{name}.lock", "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit(
+            f"A listener for {name!r} is already running — not starting a second one. "
+            f"Stop it, or revoke {name!r} in Discord."
+        )
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle  # keep referenced: closing it drops the lock
 
 
 # ---- transport ------------------------------------------------------------
@@ -47,16 +70,32 @@ def request(method, url, token=None, body=None, timeout=90):
             return exc.code, json.loads(raw or b"{}")
         except json.JSONDecodeError:
             return exc.code, {"detail": raw.decode(errors="replace")}
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        # Status 0 means "couldn't reach the bus", which is retryable. A listener
+        # that dies on a container restart or a brief network blip is not
+        # long-lived, which is the entire point of it.
+        return 0, {"detail": f"unreachable: {exc}"}
 
 
 def config_path(name):
     return CONFIG_DIR / f"{name}.json"
 
 
-def load_config(name):
+def load_config(name, url=None, key=None):
+    """Saved identity, or one passed straight in.
+
+    An agent that already registered itself has a key in hand and must not be
+    made to register again — re-registering rotates the key and can collide with
+    its own name.
+    """
+    if url and key:
+        return {"url": url.rstrip("/"), "name": name, "key": key}
     path = config_path(name)
     if not path.exists():
-        sys.exit(f"No saved identity for {name!r}. Run: switchboard join --name {name} …")
+        sys.exit(
+            f"No saved identity for {name!r}. Either pass --url and --key, "
+            f"or run: switchboard join --name {name} …"
+        )
     return json.loads(path.read_text())
 
 
@@ -90,11 +129,11 @@ def cmd_join(args):
 
 
 def cmd_listen(args):
-    cfg = load_config(args.name)
-    cursor = args.after
+    cfg = load_config(args.name, args.url, args.key)
+    cursor, backoff = args.after, 1
     print(f"Listening as {cfg['name']}… (ctrl-c to stop)", file=sys.stderr)
     while True:
-        status, payload = fetch(cfg, cursor, args.wait)
+        status, payload, backoff = fetch(cfg, cursor, args.wait, backoff)
         if status is None:
             continue
         for message in payload.get("messages", []):
@@ -102,20 +141,27 @@ def cmd_listen(args):
             print(f"[{message['seq']}] {message['from']}: {message['text']}")
 
 
-def fetch(cfg, cursor, wait):
-    """Long-poll. Returns (status, payload); exits on a dead key."""
+def fetch(cfg, cursor, wait, backoff):
+    """Long-poll. Returns (status, payload, backoff); exits only on a dead key."""
     status, payload = request(
         "GET", f"{cfg['url']}/messages?after={cursor}&wait={wait}",
         token=cfg["key"], timeout=wait + 30,
     )
     if status == 403:
         # Revocation is the intended kill switch: /switchboard revoke stops us.
-        sys.exit(f"Key rejected — you have been revoked or the bus was disabled. Stopping.")
+        # It is the ONLY response that ends the process — everything else is
+        # something to wait out.
+        sys.exit("Key rejected — you have been revoked or the bus was disabled. Stopping.")
+    if status == 0:
+        print(f"  bus unreachable ({payload.get('detail')}); retrying in {backoff}s",
+              file=sys.stderr)
+        time.sleep(backoff)
+        return None, {}, min(backoff * 2, 60)
     if status != 200:
         print(f"  poll returned {status}: {payload.get('detail')}", file=sys.stderr)
         time.sleep(5)
-        return None, {}
-    return status, payload
+        return None, {}, 1
+    return status, payload, 1
 
 
 def build_prompt(cfg, messages, style, roster):
@@ -144,13 +190,15 @@ def build_prompt(cfg, messages, style, roster):
 
 
 def cmd_run(args):
-    cfg = load_config(args.name)
-    cursor = args.after
-    print(f"Running as {cfg['name']} — exec: {args.exec}", file=sys.stderr)
+    cfg = load_config(args.name, args.url, args.key)
+    lock = acquire_singleton_lock(args.name)  # noqa: F841 - held for process lifetime
+    cursor, backoff = args.after, 1
+    print(f"Running as {cfg['name']} (pid {os.getpid()}) — exec: {args.exec}",
+          file=sys.stderr)
     print("Revoke this agent in Discord to stop it.", file=sys.stderr)
 
     while True:
-        status, payload = fetch(cfg, cursor, args.wait)
+        status, payload, backoff = fetch(cfg, cursor, args.wait, backoff)
         if status is None:
             continue
 
@@ -201,6 +249,8 @@ def cmd_run(args):
             sys.exit("Key rejected — revoked. Stopping.")
         elif status != 200:
             print(f"  say failed ({status}): {out.get('detail')}", file=sys.stderr)
+            if status == 0:
+                time.sleep(5)
         else:
             print(f"  posted {len(reply)} chars to {out.get('conversation_id')}",
                   file=sys.stderr)
@@ -218,6 +268,8 @@ def main():
 
     listen = sub.add_parser("listen", help="Print messages as they arrive")
     listen.add_argument("--name", required=True)
+    listen.add_argument("--url")
+    listen.add_argument("--key")
     listen.add_argument("--after", type=int, default=0)
     listen.add_argument("--wait", type=int, default=30)
     listen.set_defaults(func=cmd_listen)
@@ -226,6 +278,8 @@ def main():
     run.add_argument("--name", required=True)
     run.add_argument("--exec", required=True,
                      help="Command receiving the prompt on stdin, e.g. 'claude -p'")
+    run.add_argument("--url", help="Bus URL (with --key, skips the saved identity)")
+    run.add_argument("--key", help="Your sb_live_ key, if you already registered")
     run.add_argument("--after", type=int, default=0)
     run.add_argument("--wait", type=int, default=45)
     run.add_argument("--timeout", type=int, default=300)

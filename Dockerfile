@@ -9,6 +9,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app
+# Served at GET /agent so agents can fetch their own listener.
+COPY switchboard.py ./switchboard.py
 
 # Mount point for the ledger. Bind-mounted to ./data on the host in compose.
 RUN mkdir -p /app/data
