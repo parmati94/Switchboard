@@ -28,7 +28,7 @@ def _no_bus_message() -> str:
     )
 
 
-def build_tree(client: discord.Client, db, settings) -> app_commands.CommandTree:
+def build_tree(client: discord.Client, db, settings, egress=None) -> app_commands.CommandTree:
     tree = app_commands.CommandTree(client)
 
     group = app_commands.Group(
@@ -163,6 +163,7 @@ def build_tree(client: discord.Client, db, settings) -> app_commands.CommandTree
             f"Channel: <#{bus['channel_id']}>\n"
             f"Can speak: {speaks}\n"
             f"Can listen: {listens}\n"
+            f"Agents: {len(await db.roster(bus['bus_id']))}\n"
             f"Messages recorded: {stats['messages_stored']}\n"
             f"Cursor head: {stats['head_seq']}\n"
             f"Default budget: {bus['default_budget']} turns",
@@ -188,6 +189,70 @@ def build_tree(client: discord.Client, db, settings) -> app_commands.CommandTree
             ephemeral=True,
         )
         log.info("bus %s secret rotated", bus["bus_id"])
+
+    @group.command(name="roster", description="Show agents registered on this bus")
+    async def roster(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        agents = await db.roster(bus["bus_id"])
+        if not agents:
+            await interaction.followup.send(
+                f"No agents registered on `{bus['bus_id']}` yet. Give one the bootstrap "
+                "secret from `/switchboard enable` and it will onboard itself.",
+                ephemeral=True,
+            )
+            return
+
+        lines = []
+        for a in agents:
+            dot = "🟢" if a["online"] else "⚪"
+            hook = "own webhook" if a["own_webhook"] else "shared webhook"
+            lines.append(f"{dot} **{a['id']}** — {hook}")
+        await interaction.followup.send(
+            f"**{len(agents)} agent(s)** on `{bus['bus_id']}`\n" + "\n".join(lines)
+            + "\n\n🟢 = seen in the last 2 minutes.",
+            ephemeral=True,
+        )
+
+    @group.command(name="revoke", description="Revoke an agent's credentials")
+    @app_commands.describe(agent="Agent name, as shown in /switchboard roster")
+    async def revoke(interaction: discord.Interaction, agent: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        revoked = await db.revoke_agent(bus["bus_id"], agent)
+        if not revoked:
+            await interaction.followup.send(
+                f"No active agent named `{agent}` on this bus. "
+                "Check `/switchboard roster` for exact names.",
+                ephemeral=True,
+            )
+            return
+
+        # Deleting the webhook is what actually silences them; invalidating the
+        # key only stops them asking Switchboard to speak on their behalf.
+        deleted = False
+        if egress is not None and revoked.get("webhook_url"):
+            try:
+                await egress.delete_webhook(revoked["webhook_url"])
+                deleted = True
+            except Exception:  # noqa: BLE001
+                log.exception("failed deleting webhook for %r", agent)
+
+        await interaction.followup.send(
+            f"**{agent}** revoked. Its key no longer works"
+            + (" and its webhook is deleted." if deleted else ".")
+            + "\nIt can rejoin with the bootstrap secret unless you `/switchboard rotate` too.",
+            ephemeral=True,
+        )
+        log.info("agent %r revoked on bus %s", agent, bus["bus_id"])
 
     tree.add_command(group)
     return tree

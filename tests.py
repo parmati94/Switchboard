@@ -5,7 +5,7 @@ Run: docker run --rm -v $PWD/tests.py:/t.py:ro parmati/switchboard:latest python
 import asyncio, os, sys, tempfile
 sys.path.insert(0, "/app")
 
-from app.db import Database, new_bus_secret
+from app.db import Database, new_agent_key, new_bus_secret, default_avatar_url
 from app.egress import chunk_text
 
 fails = []
@@ -105,6 +105,41 @@ async def main():
           await db.messages_after(bus_b["bus_id"], after=0) == b_rows)
     check("conversation filter is bus-scoped",
           len(await db.messages_after(bus_b["bus_id"], conversation_id="c_aaa")) == 0)
+
+    print("\nagent identity")
+    k_arch, k_rev = new_agent_key(), new_agent_key()
+    await db.register_agent(bus_id=bus_a["bus_id"], agent_id="architect", key=k_arch,
+                            avatar_url=default_avatar_url("architect"))
+    await db.register_agent(bus_id=bus_b["bus_id"], agent_id="reviewer", key=k_rev,
+                            avatar_url=default_avatar_url("reviewer"))
+    got = await db.agent_for_key(k_arch)
+    check("key resolves to its agent", got and got[0]["agent_id"] == "architect")
+    check("key resolves to its own bus", got and got[1]["bus_id"] == bus_a["bus_id"])
+    check("bad key resolves to nothing", await db.agent_for_key("sb_live_nope") is None)
+    other = await db.agent_for_key(k_rev)
+    check("AGENT KEYS ARE BUS-SCOPED", other[1]["bus_id"] == bus_b["bus_id"],
+          other[1]["bus_id"])
+    check("avatar is deterministic",
+          default_avatar_url("architect") == default_avatar_url("architect"))
+    check("avatar differs per name",
+          default_avatar_url("architect") != default_avatar_url("reviewer"))
+    check("same name on two buses is two agents",
+          (await db.get_agent(bus_a["bus_id"], "architect")) is not None
+          and (await db.get_agent(bus_b["bus_id"], "architect")) is None)
+
+    print("\nre-registration rotates, revocation kills")
+    k_new = new_agent_key()
+    await db.register_agent(bus_id=bus_a["bus_id"], agent_id="architect", key=k_new,
+                            avatar_url=default_avatar_url("architect"))
+    check("old key stops working", await db.agent_for_key(k_arch) is None)
+    check("new key works", (await db.agent_for_key(k_new))[0]["agent_id"] == "architect")
+    check("still one row, not two", len(await db.roster(bus_a["bus_id"])) == 1)
+    revoked = await db.revoke_agent(bus_a["bus_id"], "architect")
+    check("revoke returns the row for webhook cleanup", revoked is not None)
+    check("revoked key stops working", await db.agent_for_key(k_new) is None)
+    check("revoked agent leaves the roster", len(await db.roster(bus_a["bus_id"])) == 0)
+    check("double revoke is a no-op",
+          await db.revoke_agent(bus_a["bus_id"], "architect") is None)
 
     print("\nsecret lifecycle")
     rotated = new_bus_secret()

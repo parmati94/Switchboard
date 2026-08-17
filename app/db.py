@@ -19,12 +19,13 @@ import logging
 import secrets
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -50,6 +51,22 @@ CREATE TABLE IF NOT EXISTS buses (
 
 CREATE INDEX IF NOT EXISTS idx_buses_secret  ON buses(secret_hash);
 CREATE INDEX IF NOT EXISTS idx_buses_channel ON buses(channel_id);
+
+-- One row per agent per bus. Names are unique within a bus, never across buses.
+CREATE TABLE IF NOT EXISTS agents (
+    bus_id      TEXT NOT NULL,
+    agent_id    TEXT NOT NULL,        -- the display name, also the address
+    key_hash    TEXT NOT NULL,        -- sha256 of the sb_live_ key
+    webhook_id  TEXT,
+    webhook_url TEXT,                 -- never leaves this process
+    avatar_url  TEXT,
+    created_at  REAL NOT NULL,
+    last_seen   REAL,
+    revoked_at  REAL,
+    PRIMARY KEY (bus_id, agent_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_key ON agents(key_hash);
 
 CREATE TABLE IF NOT EXISTS messages (
     -- Monotonic but NOT contiguous: SQLite consumes the AUTOINCREMENT counter
@@ -86,6 +103,20 @@ def hash_secret(secret: str) -> str:
 
 def new_bus_secret() -> str:
     return "sb_boot_" + secrets.token_urlsafe(24)
+
+
+def new_agent_key() -> str:
+    return "sb_live_" + secrets.token_urlsafe(24)
+
+
+def default_avatar_url(name: str) -> str:
+    """A deterministic face per agent name.
+
+    Discord fetches avatar URLs from its own servers, so Switchboard cannot serve
+    these while PUBLIC_URL is a private address — hence a generated-avatar
+    service rather than self-hosting. Same name always yields the same face.
+    """
+    return f"https://api.dicebear.com/9.x/bottts/png?seed={quote(name, safe='')}"
 
 
 def _row_to_message(row: aiosqlite.Row) -> dict:
@@ -240,6 +271,125 @@ class Database:
             "SELECT COUNT(*) AS n FROM buses WHERE enabled = 1"
         ) as cur:
             return (await cur.fetchone())["n"]
+
+    # ---- agents ----------------------------------------------------------
+
+    async def register_agent(
+        self,
+        *,
+        bus_id: str,
+        agent_id: str,
+        key: str,
+        avatar_url: str,
+        webhook_id: str | None = None,
+        webhook_url: str | None = None,
+    ) -> dict:
+        """Create or re-key an agent. Re-registering the same name rotates its key.
+
+        This is deliberate: an agent that lost its key can recover by registering
+        again with the bootstrap secret, and the old key stops working.
+        """
+        assert self._conn
+        await self._conn.execute(
+            """
+            INSERT INTO agents
+                (bus_id, agent_id, key_hash, webhook_id, webhook_url, avatar_url,
+                 created_at, last_seen, revoked_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(bus_id, agent_id) DO UPDATE SET
+                key_hash    = excluded.key_hash,
+                avatar_url  = excluded.avatar_url,
+                webhook_id  = COALESCE(excluded.webhook_id, agents.webhook_id),
+                webhook_url = COALESCE(excluded.webhook_url, agents.webhook_url),
+                last_seen   = excluded.last_seen,
+                revoked_at  = NULL
+            """,
+            (bus_id, agent_id, hash_secret(key), webhook_id, webhook_url,
+             avatar_url, time.time(), time.time()),
+        )
+        await self._conn.commit()
+        agent = await self.get_agent(bus_id, agent_id)
+        assert agent
+        return agent
+
+    async def get_agent(self, bus_id: str, agent_id: str) -> dict | None:
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT * FROM agents WHERE bus_id = ? AND agent_id = ?", (bus_id, agent_id)
+        ) as cur:
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def agent_for_key(self, key: str) -> tuple[dict, dict] | None:
+        """Resolve an agent key to (agent, bus). The tenancy boundary."""
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT * FROM agents WHERE key_hash = ? AND revoked_at IS NULL",
+            (hash_secret(key),),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        agent = dict(row)
+        async with self._conn.execute(
+            "SELECT * FROM buses WHERE bus_id = ? AND enabled = 1", (agent["bus_id"],)
+        ) as cur:
+            bus_row = await cur.fetchone()
+        if not bus_row:
+            return None
+        return agent, _row_to_bus(bus_row)
+
+    async def touch_agent(self, bus_id: str, agent_id: str) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE agents SET last_seen = ? WHERE bus_id = ? AND agent_id = ?",
+            (time.time(), bus_id, agent_id),
+        )
+        await self._conn.commit()
+
+    async def set_agent_webhook(
+        self, bus_id: str, agent_id: str, webhook_id: str, webhook_url: str
+    ) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE agents SET webhook_id = ?, webhook_url = ? "
+            "WHERE bus_id = ? AND agent_id = ?",
+            (webhook_id, webhook_url, bus_id, agent_id),
+        )
+        await self._conn.commit()
+
+    async def roster(self, bus_id: str, online_within: float = 120.0) -> list[dict]:
+        assert self._conn
+        now = time.time()
+        async with self._conn.execute(
+            "SELECT agent_id, avatar_url, created_at, last_seen, webhook_id "
+            "FROM agents WHERE bus_id = ? AND revoked_at IS NULL ORDER BY created_at",
+            (bus_id,),
+        ) as cur:
+            return [
+                {
+                    "id": r["agent_id"],
+                    "avatar_url": r["avatar_url"],
+                    "own_webhook": r["webhook_id"] is not None,
+                    "last_seen": r["last_seen"],
+                    "online": bool(r["last_seen"] and now - r["last_seen"] < online_within),
+                }
+                for r in await cur.fetchall()
+            ]
+
+    async def revoke_agent(self, bus_id: str, agent_id: str) -> dict | None:
+        """Mark revoked and return the row, so the caller can delete the webhook."""
+        assert self._conn
+        agent = await self.get_agent(bus_id, agent_id)
+        if not agent or agent["revoked_at"]:
+            return None
+        await self._conn.execute(
+            "UPDATE agents SET revoked_at = ?, key_hash = '' "
+            "WHERE bus_id = ? AND agent_id = ?",
+            (time.time(), bus_id, agent_id),
+        )
+        await self._conn.commit()
+        return agent
 
     # ---- messages --------------------------------------------------------
 

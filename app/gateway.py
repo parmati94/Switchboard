@@ -18,9 +18,10 @@ log = logging.getLogger("switchboard.gateway")
 
 
 class Gateway:
-    def __init__(self, settings, db):
+    def __init__(self, settings, db, egress=None):
         self.settings = settings
         self.db = db
+        self.egress = egress
 
         # Least privilege, matching the bot's role permissions. message_content
         # is privileged and must also be toggled on in the developer portal —
@@ -32,7 +33,7 @@ class Gateway:
         intents.message_content = True
 
         self.client = discord.Client(intents=intents)
-        self.tree = build_tree(self.client, db, settings)
+        self.tree = build_tree(self.client, db, settings, egress)
 
         self._task: asyncio.Task | None = None
         self._ready_since: float | None = None

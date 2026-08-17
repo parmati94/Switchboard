@@ -81,6 +81,42 @@ async def ensure_bus_webhook(client, db, settings, channel, bus) -> str:
     return hook.url
 
 
+# Discord's "Maximum number of webhooks reached (15)" error code.
+MAX_WEBHOOKS_CODE = 30007
+
+
+async def ensure_agent_webhook(client, db, settings, channel, bus, agent_id) -> str | None:
+    """Mint a webhook for one agent, or return None to fall back to the bus one.
+
+    Per-agent webhooks are what make revocation per-agent: deleting one webhook
+    silences one agent without disturbing the others. Discord caps webhooks at
+    15 per channel, so past that we return None and the caller posts through the
+    bus webhook with a username override — identities still render distinctly,
+    but revoking that agent means rotating rather than deleting.
+    """
+    existing = await db.get_agent(bus["bus_id"], agent_id)
+    if existing and existing.get("webhook_url"):
+        return existing["webhook_url"]
+
+    try:
+        hook = await channel.create_webhook(
+            name=f"{settings.webhook_name} · {agent_id}",
+            reason=f"Switchboard agent {agent_id}",
+        )
+    except discord.HTTPException as exc:
+        if exc.code == MAX_WEBHOOKS_CODE:
+            log.warning(
+                "webhook cap reached on bus %s — agent %r will share the bus webhook",
+                bus["bus_id"], agent_id,
+            )
+            return None
+        raise
+
+    await db.set_agent_webhook(bus["bus_id"], agent_id, str(hook.id), hook.url)
+    log.info("agent %r on bus %s got webhook %s", agent_id, bus["bus_id"], hook.id)
+    return hook.url
+
+
 class NoWebhookConfigured(RuntimeError):
     pass
 
@@ -99,6 +135,14 @@ class Egress:
         if self._session:
             await self._session.close()
             self._session = None
+
+    async def delete_webhook(self, webhook_url: str) -> None:
+        """Used by revoke. Silently tolerates an already-deleted webhook."""
+        assert self._session
+        try:
+            await discord.Webhook.from_url(webhook_url, session=self._session).delete()
+        except discord.NotFound:
+            pass
 
     async def send(
         self,
