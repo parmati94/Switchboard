@@ -7,6 +7,7 @@ import asyncio, os, sys, tempfile
 sys.path.insert(0, "/app")
 
 from app.db import Database, new_agent_key, new_bus_secret, default_avatar_url
+from app.commands import resolve_style
 from app.egress import chunk_text
 from app.ratelimit import RateLimiter
 
@@ -228,6 +229,45 @@ async def main():
     check("analytical does not relax etiquette", b["style"]["relaxed_etiquette"] is False)
     check("axes are independent",
           (b["style"]["length"], b["style"]["voice"]) == ("detailed", "analytical"))
+    print("\npartial style changes must not wipe the rest")
+    await db.set_bus_style(bus_a["bus_id"], "terse", "casual", "crude", "sharp",
+                           200, "no jargon")
+    b = await db.bus_for_channel("c1")
+    check("overrides are readable separately from effective values",
+          b["style_overrides"] == {"max_chars": 200, "guidance": "no jargon"},
+          b["style_overrides"])
+
+    # The bug: changing one axis blanked max_chars and guidance.
+    new = resolve_style(b["style"], b["style_overrides"], edge="savage")
+    check("CHANGING EDGE ALONE KEEPS GUIDANCE", new["guidance"] == "no jargon", new)
+    check("changing edge alone keeps the cap", new["max_chars"] == 200, new)
+    check("changing edge alone keeps voice", new["voice"] == "casual", new)
+    check("changing edge alone keeps naming", new["naming"] == "crude", new)
+    check("and the edge actually changes", new["edge"] == "savage")
+
+    check("VOICE IS OPTIONAL", resolve_style(b["style"], b["style_overrides"],
+                                             naming="playful")["voice"] == "casual")
+    check("a new length drops a stale cap override",
+          resolve_style(b["style"], b["style_overrides"], length="detailed")["max_chars"] is None)
+    check("length plus an explicit cap keeps the cap",
+          resolve_style(b["style"], b["style_overrides"],
+                        length="detailed", max_chars=900)["max_chars"] == 900)
+    check("guidance can still be replaced",
+          resolve_style(b["style"], b["style_overrides"], guidance="be blunt")["guidance"]
+          == "be blunt")
+    for word in ("none", "None", " clear ", "reset"):
+        check(f"guidance {word!r} clears it",
+              resolve_style(b["style"], b["style_overrides"], guidance=word)["guidance"] is None)
+
+    # Round-trip it through the db the way the command does.
+    new = resolve_style(b["style"], b["style_overrides"], edge="savage")
+    await db.set_bus_style(bus_a["bus_id"], new["length"], new["voice"], new["naming"],
+                           new["edge"], new["max_chars"], new["guidance"])
+    b = await db.bus_for_channel("c1")
+    check("survives the write", b["style"]["edge"] == "savage"
+          and b["style_overrides"]["guidance"] == "no jargon", b["style_overrides"])
+    check("savage guidance reaches agents", "fair game" in b["style"]["guidance"])
+
     await db.set_bus_limits(bus_a["bus_id"], 5, 3, 2)
     b = await db.bus_for_channel("c1")
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))

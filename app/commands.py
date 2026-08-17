@@ -31,6 +31,47 @@ COLOUR_GREEN = 0x2F6B4F
 COLOUR_BRASS = 0xB8801F
 COLOUR_RED = 0xA83A2E
 
+# Typed into /switchboard style guidance to remove the bus's extra instruction.
+# Discord has no way to send an empty string for an optional text option, so
+# there has to be a word that means "clear it".
+CLEAR_WORDS = {"none", "clear", "reset", "no additional guidance", "-"}
+
+
+def resolve_style(current: dict, overrides: dict, *, voice=None, edge=None,
+                  length=None, naming=None, max_chars=None, guidance=None) -> dict:
+    """Work out the new style from a partial change. Pure, so it is testable.
+
+    Every field is preserve-by-default. This used to live inline in the command
+    and only covered three of the six fields: omitting max_chars or guidance
+    wrote NULL over them, so changing edge alone silently deleted a channel's
+    custom instruction with nothing in the response to say so.
+    """
+    # A length preset carries its own cap, so choosing one without naming a cap
+    # means "use that preset's". Otherwise an override set once would outlive
+    # every later length change with no way to drop it.
+    if max_chars is not None:
+        resolved_max = max_chars
+    elif length is not None:
+        resolved_max = None
+    else:
+        resolved_max = overrides["max_chars"]
+
+    if guidance is None:
+        resolved_guidance = overrides["guidance"]
+    elif guidance.strip().lower() in CLEAR_WORDS:
+        resolved_guidance = None
+    else:
+        resolved_guidance = guidance
+
+    return {
+        "length": length or current["length"],
+        "voice": voice or current["voice"],
+        "naming": naming or current["naming"],
+        "edge": edge or current["edge"],
+        "max_chars": resolved_max,
+        "guidance": resolved_guidance,
+    }
+
 
 def _tick(ok) -> str:
     return "✅" if ok else "❌"
@@ -565,8 +606,8 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         edge="How they treat each other. Separate from voice on purpose.",
         length="How much they write.",
         naming="What they call themselves.",
-        max_chars="Optional hard cap override (100-1900)",
-        guidance="Optional extra instruction, e.g. 'no jargon, assume no context'",
+        max_chars="Hard cap override (100-1900). Omit with a new length to use that preset's cap.",
+        guidance="Extra instruction, e.g. 'no jargon, assume no context'. Say 'none' to clear.",
     )
     @app_commands.choices(
         voice=[
@@ -596,7 +637,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
     )
     async def style(
         interaction: discord.Interaction,
-        voice: app_commands.Choice[str],
+        voice: app_commands.Choice[str] | None = None,
         edge: app_commands.Choice[str] | None = None,
         length: app_commands.Choice[str] | None = None,
         naming: app_commands.Choice[str] | None = None,
@@ -609,12 +650,26 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             await interaction.followup.send(_no_bus_message(), ephemeral=True)
             return
 
-        chosen_length = length.value if length else bus["style"]["length"]
-        chosen_naming = naming.value if naming else bus["style"]["naming"]
-        chosen_edge = edge.value if edge else bus["style"]["edge"]
+        if not any((voice, edge, length, naming, max_chars, guidance)):
+            await interaction.followup.send(
+                "Nothing to change — pass at least one option. "
+                "`/switchboard status` shows what this bus is set to.",
+                ephemeral=True,
+            )
+            return
+
+        new = resolve_style(
+            bus["style"], bus["style_overrides"],
+            voice=voice.value if voice else None,
+            edge=edge.value if edge else None,
+            length=length.value if length else None,
+            naming=naming.value if naming else None,
+            max_chars=max_chars,
+            guidance=guidance,
+        )
         await db.set_bus_style(
-            bus["bus_id"], chosen_length, voice.value, chosen_naming, chosen_edge,
-            max_chars, guidance,
+            bus["bus_id"], new["length"], new["voice"], new["naming"], new["edge"],
+            new["max_chars"], new["guidance"],
         )
         effective = (await db.bus_for_channel(str(interaction.channel_id)))["style"]
 
@@ -623,14 +678,25 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             description=f"`{bus['bus_id']}` · #{bus['channel_name']}",
             colour=COLOUR_GREEN,
         )
-        embed.add_field(name="Voice", value=f"**{voice.value}**\n-# how they talk",
+        # Every omitted field is carried forward, so the embed says which ones
+        # this command actually touched. Otherwise a one-field change reads like
+        # it just set all six.
+        def kept(passed, note: str) -> str:
+            return f"\n-# {note}" if passed else f"\n-# {note} · unchanged"
+
+        embed.add_field(name="Voice",
+                        value=f"**{effective['voice']}**{kept(voice, 'how they talk')}",
                         inline=True)
-        embed.add_field(name="Edge", value=f"**{chosen_edge}**\n-# how they treat people",
+        embed.add_field(name="Edge",
+                        value=f"**{effective['edge']}**{kept(edge, 'how they treat people')}",
                         inline=True)
         embed.add_field(name="Length",
-                        value=f"**{chosen_length}**\n{effective['max_chars']} char cap",
+                        value=f"**{effective['length']}**"
+                              f"{kept(length, str(effective['max_chars']) + ' char cap')}",
                         inline=True)
-        embed.add_field(name="Naming", value=f"**{chosen_naming}**", inline=True)
+        embed.add_field(name="Naming",
+                        value=f"**{effective['naming']}**{kept(naming, 'what they call themselves')}",
+                        inline=True)
         embed.add_field(name="What agents are told",
                         value=effective["guidance"][:1020], inline=False)
         embed.add_field(name="…and about names",

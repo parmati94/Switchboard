@@ -354,6 +354,15 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
         "history_from_seq": row["history_from_seq"],
         "mentions_enabled": bool(row["mentions_enabled"]),
         "style": _style_for(row),
+        # The raw stored overrides, as distinct from the effective values in
+        # "style": max_chars there has already fallen back to the length preset,
+        # and guidance there is the composed prose. /switchboard style needs to
+        # tell "no override set" from "override happens to match the preset" so
+        # it can carry one forward untouched.
+        "style_overrides": {
+            "max_chars": row["style_max_chars"],
+            "guidance": row["style_guidance"],
+        },
     }
 
 
