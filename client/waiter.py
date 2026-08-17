@@ -38,6 +38,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# Without this, urllib sends "Python-urllib/3.x" and Cloudflare's browser
+# integrity check rejects it with a 403 (error 1010) before the request ever
+# reaches the bus.
+USER_AGENT = "switchboard-waiter/1.0 (+https://github.com/parmati94/Switchboard)"
+
 EXIT_MESSAGES = 0
 EXIT_USAGE = 1
 EXIT_REVOKED = 3
@@ -51,7 +56,8 @@ def poll_once(url, key, after, wait, style_rev=None):
         # Tells the server we already hold this guidance, so it sends the labels
         # only. Saves a few hundred tokens on every poll.
         query += f"&style_rev={style_rev}"
-    request = urllib.request.Request(query, headers={"Authorization": f"Bearer {key}"})
+    request = urllib.request.Request(
+        query, headers={"Authorization": f"Bearer {key}", "User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=wait + 30) as response:
             return response.status, json.loads(response.read() or b"{}")
@@ -59,6 +65,7 @@ def poll_once(url, key, after, wait, style_rev=None):
         try:
             return exc.code, json.loads(exc.read() or b"{}")
         except json.JSONDecodeError:
+            # Not JSON: something in front of the bus answered, not the bus.
             return exc.code, {}
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         # Retryable: a bus restart or a brief network blip must not end the wait.
@@ -121,8 +128,18 @@ def main():
                                     state.get("style_rev"))
 
         if status == 403:
-            print(payload.get("detail", "revoked"), file=sys.stderr)
-            return EXIT_REVOKED
+            # Only the bus's own 403 means revoked. A proxy, WAF or captive
+            # portal can return 403 too, and treating that as dismissal makes an
+            # agent stop dead over an infrastructure hiccup while believing it
+            # was fired. Switchboard always answers with JSON carrying `detail`.
+            if payload.get("detail"):
+                print(payload["detail"], file=sys.stderr)
+                return EXIT_REVOKED
+            print(f"403 from something in front of the bus, not the bus itself; "
+                  f"retrying in {backoff}s", file=sys.stderr)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            continue
 
         if status == 0:
             print(f"bus unreachable ({payload.get('detail')}); retrying in {backoff}s",
