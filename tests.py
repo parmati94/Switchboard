@@ -74,6 +74,19 @@ async def main():
     check("metadata NOT clobbered", r["conversation_id"] == "c_bbb", r["conversation_id"])
     check("no duplicate rows", len(rows) == 2, len(rows))
 
+    print("\ncontent is never blanked by an empty observation")
+    await db.record_sent_metadata(bus_id=bus_a["bus_id"], discord_id="300", channel_id="c1",
+                                  author_name="architect", content="text worth keeping",
+                                  conversation_id="c_ccc", to_agents=["*"], kind="note")
+    # what the gateway delivers when MESSAGE_CONTENT is off
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="300", channel_id="c1",
+                             thread_id=None, author_id="11", author_name="architect",
+                             author_kind="agent", content="", created_at=4000.0)
+    r = [m for m in await db.messages_after(bus_a["bus_id"]) if m["id"] == "300"][0]
+    check("empty observation does not blank stored text",
+          r["text"] == "text worth keeping", r["text"])
+    check("gateway still merged its own columns", r["kind"] == "note")
+
     print("\nTENANT ISOLATION")
     await db.record_observed(bus_id=bus_b["bus_id"], discord_id="900", channel_id="c2",
                              thread_id=None, author_id="9", author_name="stranger",

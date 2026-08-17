@@ -271,7 +271,14 @@ class Database:
                 author_id   = excluded.author_id,
                 author_name = excluded.author_name,
                 author_kind = excluded.author_kind,
-                content     = excluded.content,
+                -- Never let an empty observation destroy text /say already
+                -- stored. Discord delivers content-less messages when the
+                -- MESSAGE_CONTENT intent is off, and an unconditional
+                -- overwrite would silently blank the ledger while everything
+                -- still looked healthy.
+                content     = CASE WHEN excluded.content <> ''
+                                   THEN excluded.content
+                                   ELSE messages.content END,
                 created_at  = excluded.created_at
             """,
             (bus_id, discord_id, channel_id, thread_id, author_id,
