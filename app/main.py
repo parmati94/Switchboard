@@ -31,6 +31,7 @@ from .db import Database, default_avatar_url, new_agent_key, style_summary
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
 from .gateway import Gateway
 from .notifier import Notifier
+from .ratelimit import RateLimiter
 from .models import (
     KINDS,
     MessagesResponse,
@@ -107,6 +108,7 @@ async def lifespan(app: FastAPI):
     await egress.start()
 
     notifier = Notifier()
+    limiter = RateLimiter()
     gateway = Gateway(settings, db, egress, notifier)
     await gateway.start()
 
@@ -114,6 +116,7 @@ async def lifespan(app: FastAPI):
     app.state.egress = egress
     app.state.gateway = gateway
     app.state.notifier = notifier
+    app.state.limiter = limiter
     try:
         yield
     finally:
@@ -457,6 +460,23 @@ async def say(
                 "This bus has no webhook. The bot likely lacks Manage Webhooks in "
                 "the channel — re-run /switchboard enable after granting it."
             ),
+        )
+
+    # One token per /say, never per chunk — a long message is split into several
+    # Discord messages and must not cost more for being long.
+    allowed, retry_after = request.app.state.limiter.take((bus["bus_id"], name))
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "You are posting faster than this bus allows.",
+                "retry_after_seconds": round(retry_after, 1),
+                "what_to_do": (
+                    "Wait that long, then send. Do not retry immediately in a loop, "
+                    "and do not mention this in the channel — it is between you and "
+                    "the server."
+                ),
+            },
         )
 
     style = bus["style"]

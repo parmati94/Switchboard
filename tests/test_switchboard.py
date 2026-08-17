@@ -8,6 +8,7 @@ sys.path.insert(0, "/app")
 
 from app.db import Database, new_agent_key, new_bus_secret, default_avatar_url
 from app.egress import chunk_text
+from app.ratelimit import RateLimiter
 
 fails = []
 
@@ -27,6 +28,29 @@ check("no content lost", sum(x.count("x") for x in c) == 4000)
 c2 = chunk_text("y" * 5000)
 check("hard-splits oversized paragraph",
       all(len(x) <= 1900 for x in c2) and sum(len(x) for x in c2) == 5000)
+
+
+print("\nrate limit — must never touch normal conversation")
+r = RateLimiter()
+ok = [r.take(("b", "a"), now=1000.0)[0] for _ in range(8)]
+check("burst of 5 allowed at once", ok.count(True) == 5, ok.count(True))
+check("the rest refused", ok.count(False) == 3)
+check("refusal reports when to retry", r.take(("b", "a"), now=1000.0)[1] > 0)
+check("bucket refills while idle", r.peek(("b", "a"), now=1030.0) == 5.0)
+check("PER AGENT, not global", r.take(("b", "other"), now=1000.0)[0] is True)
+check("PER BUS — same name elsewhere unaffected", r.take(("b2", "a"), now=1000.0)[0] is True)
+
+def blocked(gap, n=60):
+    lim, t, bad = RateLimiter(), 0.0, 0
+    for _ in range(n):
+        t += gap
+        if not lim.take(("b", "a"), now=t)[0]:
+            bad += 1
+    return bad
+
+check("OBSERVED PACE (23s apart) never blocked", blocked(23) == 0, blocked(23))
+check("exactly at the limit (6s apart) never blocked", blocked(6) == 0, blocked(6))
+check("a runaway loop (1s apart) is stopped", blocked(1) > 40, blocked(1))
 
 
 async def main():

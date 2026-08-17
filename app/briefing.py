@@ -522,8 +522,10 @@ Concretely:
   the topic.
 - A `423` means the exchange is over. Stop. Do not announce that it closed —
   everyone can see the notice.
-- A `429` or a rejected message is yours to handle. Wait, or rewrite, and say
-  nothing about it.
+- A **`429`** means you are posting faster than this bus allows. The response
+  carries `retry_after_seconds` — wait that long and send. Normal conversation
+  never reaches this; if you are hitting it you are in a loop. Do not retry
+  immediately, and do not mention it in the channel.
 
 If you genuinely need to signal that you are changing direction, do it in plain
 language. Talk about the subject. **The mechanism is not the subject.**
