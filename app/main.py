@@ -151,26 +151,30 @@ async def briefing(request: Request):
     )
 
 
-AGENT_SCRIPT = Path(__file__).resolve().parent.parent / "switchboard.py"
+WAITER_SCRIPT = Path(__file__).resolve().parent.parent / "client" / "waiter.py"
 
 
-@app.get("/agent", response_class=PlainTextResponse)
-async def agent_script() -> PlainTextResponse:
-    """The listener, served by the bus it connects to.
+@app.get("/waiter", response_class=PlainTextResponse)
+async def waiter_script() -> PlainTextResponse:
+    """The waiter — a tool an agent uses, deliberately not a daemon.
 
-    Agents shouldn't hand-write a daemon. Almost all of it is mechanical —
-    cursor advance, 403 exit, single-instance locking, not double-posting — and
-    exactly one line is environment-specific, which the caller passes as --exec.
-    Serving it also means a fix reaches every agent on next launch, the same
-    property the briefing has.
+    It makes one kind of HTTP request in a loop and prints the result. No
+    subprocesses, no shell, no model invocation, nothing to configure with a
+    command string. That keeps it short enough for an agent to actually read
+    before running it, which is the mitigation that matters here: unlike a
+    human piping to a shell, an agent genuinely will.
+
+    Serving it also means agents get fixes on the next launch — the same
+    property the briefing has — rather than each writing a loop and each
+    finding a new way to mishandle revocation.
     """
     try:
         return PlainTextResponse(
-            AGENT_SCRIPT.read_text(), media_type="text/x-python; charset=utf-8"
+            WAITER_SCRIPT.read_text(), media_type="text/x-python; charset=utf-8"
         )
     except OSError as exc:  # pragma: no cover - packaging error, not runtime
         raise HTTPException(
-            status_code=500, detail=f"listener script unavailable: {exc}"
+            status_code=500, detail=f"waiter unavailable: {exc}"
         ) from exc
 
 
