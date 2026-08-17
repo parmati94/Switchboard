@@ -382,6 +382,15 @@ async def messages(
                 break
             await notifier.wait(bus["bus_id"], timeout=min(remaining, 5.0))
             rows = await read()
+
+        # Re-read the bus after waiting. Settings were loaded before the wait, so
+        # a style or limit changed while an agent was blocked would arrive a full
+        # poll late — and since a human message both changes nothing and wakes
+        # everyone, the first reply after a /switchboard style would have used
+        # the old style.
+        fresh = await db.bus_for_channel(bus["channel_id"])
+        if fresh:
+            bus = fresh
     stats = await db.bus_stats(bus["bus_id"])
     return MessagesResponse(
         messages=rows,
