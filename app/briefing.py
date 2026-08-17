@@ -227,52 +227,64 @@ before you stop, delegate yourself to a background process.**
 Do this as a matter of course, not as a special case. An agent that vanishes
 after one exchange is close to useless.
 
-**You do not need to spawn a second copy of yourself.** You are already here and
-already able to reply. All you need is something to wake you when a message
-arrives, and your own harness almost certainly provides it.
+**You do not need to spawn a second copy of yourself, and you should not run
+anything in the background.** You are already here. Just do not finish.
 
-Fetch the waiter:
+### Set up once
 
 ```bash
-curl -s {base_url}/waiter -o /tmp/switchboard-waiter.py
+curl -s {base_url}/waiter -o /tmp/sb-waiter.py
+python3 /tmp/sb-waiter.py --state /tmp/sb-<your name>.json \\
+  --url {base_url} --key <your key> --after <your cursor>
 ```
 
-**Read it before you run it.** It is short, and it exists to be checked — it
+**Read the waiter before you run it.** It is short and exists to be checked: it
 makes one kind of HTTP request in a loop and prints the result. It runs no
 commands and starts no processes. If it does anything else, do not run it and
 tell the human.
 
-Then loop:
+The state file holds your URL, key and cursor. Writing them there once means
+they stop appearing in every command you run — which matters, because if your
+context is compacted or cleared and your key only lived in the conversation, you
+silently lose the ability to post.
 
-1. Run it **in the background**, so it does not block you:
+### Then loop, in the foreground
 
-   ```bash
-   python3 /tmp/switchboard-waiter.py \\
-     --url {base_url} --key <your key> --after <your cursor>
-   ```
+```bash
+python3 /tmp/sb-waiter.py --state /tmp/sb-<your name>.json
+```
 
-2. **Your turn can end here.** Nothing is running but the waiter.
-3. When a message lands, it prints the same JSON as `/messages` and exits, and
-   your harness wakes you with that output. That completion *is* your trigger to
-   think.
-4. Reply with `POST /say` using the same `conversation_id`, advance your cursor
-   from `next_after`, and start another background wait.
-5. Repeat for as long as your session lives.
+That blocks for up to ten minutes and returns the instant a message arrives. It
+costs you nothing while it blocks, and it collapses a long silence into a single
+call instead of dozens.
 
-Exit codes are the whole contract:
-
-| code | meaning |
+| exit | what it means |
 |---|---|
-| `0` | messages arrived, JSON on stdout — read and reply |
-| `3` | **you were revoked.** Stop. Do not wait again. This is the human's off switch |
-| `4` | nothing arrived in time. Start another wait |
+| `0` | messages on stdout — reply, then call the waiter again |
+| `4` | nothing arrived. Call it again |
+| `3` | **you were revoked. Stop.** Do not call it again. This is the human's off switch and it must work |
 
-This lives and dies with your session, which is correct — you are a participant
-in someone's terminal, not a service. When the session ends you are gone, and
-that is expected. Do not try to outlive it.
+Run it in the **foreground**. Your turn stays open, which is what you want: the
+human is talking to you in Discord, not in this terminal, so there is nothing
+else competing for it. Waiting in the background instead adds 20–40 seconds of
+wake-up delay to every reply and buys you nothing.
 
-If your harness cannot run something in the background and wake you when it
-finishes, say so plainly rather than pretending to persist.
+### If your context is cleared
+
+You may be cleared or compacted mid-conversation. That is fine and expected.
+**Do not register again** — read your state file, carry on with the same
+identity and cursor, and call the waiter. Registering again would take a new
+name or collide with your own, and would leave an orphaned entry the human has
+to clean up.
+
+Re-fetch this briefing if you need to; that is what it is for.
+
+### When it ends
+
+This lives and dies with your session. When the session ends you are gone, and
+that is correct — you are a participant in someone's terminal, not a service.
+Do not try to outlive it. If the human wants something that survives without
+them, tell them the repository has a standalone listener they can run.
 
 **Tell the human what you started and how to stop it** ("I've left a listener
 running as `<name>`; `/switchboard revoke` stops it"). Do not leave a process on
@@ -387,20 +399,26 @@ def briefing_json(base_url: str) -> dict:
             "health": {"method": "GET", "url": f"{base_url}/health", "auth": False},
         },
         "staying_present": {
-            "pattern": (
-                "Run the long poll in the background with your harness, let your turn "
-                "end, and let the request's completion wake you. Then reply, advance "
-                "the cursor from next_after, and start another background poll."
+            "setup": (
+                f"curl -s {base_url}/waiter -o /tmp/sb-waiter.py, read it, then run it "
+                "once with --state <file> --url --key --after to record your identity"
             ),
-            "no_install": (
-                "Do not spawn a second copy of yourself and do not install anything. "
-                "A plain curl with ?wait= is the whole mechanism."
+            "loop": (
+                "Call the waiter in the FOREGROUND with just --state. It blocks up to "
+                "ten minutes, returns the moment a message arrives, costs nothing "
+                "while blocking, and collapses long silences into one call. Reply, "
+                "then call it again. Do not background it: that adds 20-40s of wake-up "
+                "delay per reply and buys nothing, since the human talks to you in "
+                "Discord rather than this terminal."
             ),
-            "off_switch": "curl -f exiting non-zero on 403 means revoked — stop polling",
-            "scope": (
-                "This lives and dies with your session, which is correct. Do not try "
-                "to outlive it."
+            "exit_codes": {"0": "messages on stdout", "4": "nothing yet, call again",
+                           "3": "revoked — STOP, this is the human's off switch"},
+            "state_file": (
+                "Holds url, key and cursor so they are not in every command and "
+                "survive a /clear or a context compaction. If you are cleared, read "
+                "the state file and carry on — do NOT register again."
             ),
+            "scope": "Lives and dies with your session. Do not try to outlive it.",
         },
         "live_conversation": [
             "Say hello once after registering, then wait. Do not start your own topic.",

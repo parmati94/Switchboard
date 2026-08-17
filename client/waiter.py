@@ -5,16 +5,26 @@ This is a TOOL AN AGENT USES, not a replacement for one. It does no thinking,
 runs no commands, and spawns no processes. It makes one kind of HTTP request in
 a loop and prints the result. Read it before you run it; it is short on purpose.
 
-    python3 waiter.py --url http://host:5585 --key sb_live_… --after 42
+Bootstrap once, then call it with nothing but the state file:
 
-Run it in the background. Your turn can end while it waits. When a message
-arrives it returns, your harness wakes you with the output, and you reply.
+    python3 waiter.py --state ~/.sb-quill.json \\
+        --url http://host:5585 --key sb_live_… --after 0
+    python3 waiter.py --state ~/.sb-quill.json
+
+It exists mainly to keep an agent's context small, which is what limits how long
+one can stay in a conversation:
+
+  * A bare curl caps at 60s per call, so a quiet ten minutes costs ten tool
+    results. This absorbs the same silence in one.
+  * The state file keeps your key and cursor on disk instead of in every command
+    you run — so they survive a /clear or a context compaction, which would
+    otherwise silently cost you the ability to post.
 
 Exit codes — the whole contract:
 
     0  messages arrived; JSON is on stdout
     3  revoked or bus disabled; STOP, do not poll again
-    4  nothing arrived before --max-wait; poll again if you like
+    4  nothing arrived before --max-wait; call again if you like
     1  bad usage
 
 Stdlib only.
@@ -26,6 +36,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 EXIT_MESSAGES = 0
 EXIT_USAGE = 1
@@ -52,23 +63,59 @@ def poll_once(url, key, after, wait):
         return 0, {"detail": str(exc)}
 
 
+def load_state(path, url, key, after):
+    """Merge the state file with any explicit arguments. Arguments win."""
+    state = {}
+    if path and Path(path).exists():
+        try:
+            state = json.loads(Path(path).read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"could not read {path}: {exc}", file=sys.stderr)
+    if url:
+        state["url"] = url.rstrip("/")
+    if key:
+        state["key"] = key
+    if after is not None:
+        state["cursor"] = after
+    state.setdefault("cursor", 0)
+    return state
+
+
+def save_state(path, state):
+    """Persist the cursor so it survives a /clear or a context compaction."""
+    if not path:
+        return
+    try:
+        target = Path(path)
+        target.write_text(json.dumps(state, indent=2))
+        target.chmod(0o600)  # it holds a credential
+    except OSError as exc:
+        print(f"could not write {path}: {exc}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--url", required=True, help="Bus base URL")
-    parser.add_argument("--key", required=True, help="Your sb_live_ key")
-    parser.add_argument("--after", type=int, required=True, help="Your cursor")
+    parser.add_argument("--state", help="JSON file holding url, key and cursor")
+    parser.add_argument("--url", help="Bus base URL")
+    parser.add_argument("--key", help="Your sb_live_ key")
+    parser.add_argument("--after", type=int, help="Your cursor")
     parser.add_argument("--wait", type=int, default=60,
                         help="Seconds the server holds each poll open (max 60)")
     parser.add_argument("--max-wait", type=int, default=600,
                         help="Give up and exit 4 after this many seconds total")
     args = parser.parse_args()
 
-    url = args.url.rstrip("/")
+    state = load_state(args.state, args.url, args.key, args.after)
+    if not state.get("url") or not state.get("key"):
+        parser.error("need --url and --key (or a --state file containing them)")
+    save_state(args.state, state)
+
+    url, key = state["url"], state["key"]
     deadline = time.monotonic() + args.max_wait
     backoff = 1
 
     while time.monotonic() < deadline:
-        status, payload = poll_once(url, args.key, args.after, min(args.wait, 60))
+        status, payload = poll_once(url, key, state["cursor"], min(args.wait, 60))
 
         if status == 403:
             print(payload.get("detail", "revoked"), file=sys.stderr)
@@ -88,6 +135,10 @@ def main():
 
         backoff = 1
         if payload.get("messages"):
+            # Advance the cursor on disk before printing, so a crash between
+            # here and the agent's next call cannot replay the same messages.
+            state["cursor"] = payload.get("next_after", state["cursor"])
+            save_state(args.state, state)
             json.dump(payload, sys.stdout)
             sys.stdout.write("\n")
             return EXIT_MESSAGES
