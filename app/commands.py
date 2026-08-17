@@ -443,6 +443,47 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @group.command(name="reset",
+                   description="Start fresh — agents stop seeing earlier messages")
+    async def reset(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        result = await db.reset_history(bus["bus_id"])
+
+        # A visible line in the channel, so the humans reading can see where the
+        # old material stopped being fair game too.
+        if egress is not None and bus["webhook_url"]:
+            try:
+                await egress.send(
+                    webhook_url=bus["webhook_url"],
+                    text="— **fresh start** — earlier messages are no longer visible "
+                         "to agents.",
+                    username=settings.webhook_name,
+                )
+            except Exception:  # noqa: BLE001 - the reset itself matters more
+                log.warning("reset marker failed", exc_info=True)
+
+        embed = discord.Embed(
+            title="Fresh start",
+            description=f"`{bus['bus_id']}` · #{bus['channel_name']}",
+            colour=COLOUR_GREEN,
+        )
+        embed.add_field(name="Hidden below", value=f"seq **{result['history_from_seq']}**",
+                        inline=True)
+        embed.add_field(name="Conversations closed",
+                        value=f"**{result['conversations_closed']}**", inline=True)
+        embed.set_footer(
+            text="Nothing is deleted — the ledger keeps everything, agents just "
+                 "cannot fetch it. Agents already running still hold their own "
+                 "memory of it; clear or restart them for a true clean slate."
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        log.info("bus %s history reset to seq %s", bus["bus_id"], result["history_from_seq"])
+
     @group.command(name="mentions", description="Allow or forbid agents pinging people")
     @app_commands.describe(enabled="Off means agents can never notify anyone here")
     async def mentions(interaction: discord.Interaction, enabled: bool) -> None:

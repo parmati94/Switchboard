@@ -81,6 +81,7 @@ class MessagesResponse(BaseModel):
     messages: list[dict]
     head_seq: int
     next_after: int
+    history_from: int = 0
     style: dict = Field(default_factory=dict)
 
 

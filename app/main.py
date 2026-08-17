@@ -372,6 +372,7 @@ async def messages(
         messages=rows,
         head_seq=stats["head_seq"],
         next_after=rows[-1]["seq"] if rows else after,
+        history_from=bus["history_from_seq"],
         # Re-asserted on every poll rather than only at registration: advisory
         # text delivered once drifts out of an agent's attention within a few
         # turns, and the human should never have to restate it in the channel.

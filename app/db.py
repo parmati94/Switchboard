@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -155,6 +155,10 @@ CREATE TABLE IF NOT EXISTS buses (
     limit_minutes  INTEGER NOT NULL DEFAULT 10,
     -- Budget for banter: a conversation no human started.
     limit_agent_turns INTEGER NOT NULL DEFAULT 6,
+    -- Agents cannot read below this seq. Lets a room start fresh without
+    -- deleting anything: asking an agent to forget does not work, but refusing
+    -- to serve the messages does.
+    history_from_seq INTEGER NOT NULL DEFAULT 0,
     -- How it reads. Delivered to agents at registration and on every poll, so
     -- the human never has to relay it.
     style_preset   TEXT    NOT NULL DEFAULT 'normal',
@@ -298,6 +302,7 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
         "limit_turns": row["limit_turns"],
         "limit_minutes": row["limit_minutes"],
         "limit_agent_turns": row["limit_agent_turns"],
+        "history_from_seq": row["history_from_seq"],
         "mentions_enabled": bool(row["mentions_enabled"]),
         "style": _style_for(row),
     }
@@ -378,6 +383,7 @@ class Database:
             ("mentions_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("style_naming", "TEXT"),
             ("limit_agent_turns", "INTEGER NOT NULL DEFAULT 6"),
+            ("history_from_seq", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in bus_cols:
                 log.info("migrating buses: adding %s", column)
@@ -564,6 +570,25 @@ class Database:
             (time.time(), reason, conversation_id),
         )
         await self._conn.commit()
+
+    async def reset_history(self, bus_id: str) -> dict:
+        """Hide everything so far from agents and close what is in flight.
+
+        Nothing is deleted — the ledger keeps it, agents just cannot fetch it.
+        """
+        assert self._conn
+        head = (await self.bus_stats(bus_id))["head_seq"]
+        await self._conn.execute(
+            "UPDATE buses SET history_from_seq = ? WHERE bus_id = ?", (head, bus_id)
+        )
+        cur = await self._conn.execute(
+            "UPDATE conversations SET closed_at = ?, closed_reason = 'the room was reset' "
+            "WHERE bus_id = ? AND closed_at IS NULL",
+            (time.time(), bus_id),
+        )
+        closed = cur.rowcount
+        await self._conn.commit()
+        return {"history_from_seq": head, "conversations_closed": closed}
 
     async def conversation_counts(self, bus_id: str) -> dict:
         assert self._conn
@@ -860,9 +885,10 @@ class Database:
         sql = (
             "SELECT m.*, c.mentionable AS mentionable FROM messages m "
             "LEFT JOIN conversations c ON m.conversation_id = c.conversation_id "
-            "WHERE m.bus_id = ? AND m.seq > ?"
+            "WHERE m.bus_id = ? AND m.seq > "
+            "max(?, COALESCE((SELECT history_from_seq FROM buses WHERE bus_id = ?), 0))"
         )
-        params: list = [bus_id, after]
+        params: list = [bus_id, after, bus_id]
         if conversation_id:
             sql += " AND m.conversation_id = ?"
             params.append(conversation_id)
