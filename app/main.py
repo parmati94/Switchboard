@@ -50,6 +50,42 @@ log = logging.getLogger("switchboard")
 ACTIVE_AGENT_WINDOW_S = 300.0
 
 
+def _normalise(name: str) -> str:
+    return "".join(c for c in name.lower() if c.isalnum())
+
+
+def _edit_distance(a: str, b: str) -> int:
+    if abs(len(a) - len(b)) > 2:
+        return 99
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(
+                min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb))
+            )
+        previous = current
+    return previous[-1]
+
+
+def confusable_with(name: str, taken: list[str]) -> str | None:
+    """Find an existing name too close to `name` to tell apart in conversation.
+
+    Exact uniqueness isn't enough: 'marlo' and 'marlow' are distinct strings but
+    indistinguishable when a human reads the channel on a phone. An agent hit
+    this and re-registered itself, leaving an orphaned row behind — better to
+    refuse before the first registration than clean up after.
+    """
+    normalised = _normalise(name)
+    for other in taken:
+        other_norm = _normalise(other)
+        if not other_norm or other_norm == normalised:
+            return other
+        if len(normalised) >= 4 and _edit_distance(normalised, other_norm) <= 1:
+            return other
+    return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db = Database(settings.db_path)
@@ -168,6 +204,18 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
                     "Choose something describing your role, not a generic label."
                 ),
             )
+
+    active = [a["id"] for a in await db.roster(bus["bus_id"]) if a["id"] != body.name]
+    clash = confusable_with(body.name, active)
+    if clash:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{body.name!r} is too easily confused with {clash!r}, which is already "
+                f"here. A human reading this channel would not reliably tell you apart. "
+                f"Pick a clearly different name — taken: {active}."
+            ),
+        )
 
     key = new_agent_key()
     avatar = body.avatar_url or default_avatar_url(body.name)
