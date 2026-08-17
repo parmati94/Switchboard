@@ -8,6 +8,7 @@ dropped before it is written. That lookup is the isolation boundary.
 import asyncio
 import logging
 import math
+import secrets
 import time
 
 import discord
@@ -143,9 +144,18 @@ class Gateway:
             else:
                 author_kind = "human"
 
+            # A human message seeds a conversation. Without this the human's
+            # message carries no conversation_id, so every agent that replies
+            # mints its own and the discussion fragments into parallel threads
+            # that each address the human and never each other. Observed live.
+            conversation_id = (
+                f"c_{secrets.token_hex(3)}" if author_kind == "human" else None
+            )
+
             try:
                 await self.db.record_observed(
                     bus_id=bus["bus_id"],
+                    conversation_id=conversation_id,
                     discord_id=str(message.id),
                     channel_id=str(parent_id or channel.id),
                     thread_id=str(channel.id) if parent_id else None,

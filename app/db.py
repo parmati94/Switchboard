@@ -405,17 +405,25 @@ class Database:
         author_kind: str,
         content: str,
         created_at: float,
+        conversation_id: str | None = None,
     ) -> int:
-        """Called by the gateway. Owns the observable columns only."""
+        """Called by the gateway. Owns the observable columns only.
+
+        conversation_id is the exception: the gateway seeds one for human
+        messages so agents have a thread to join rather than each minting their
+        own. COALESCE means a replayed message never gets re-seeded.
+        """
         assert self._conn
         await self._conn.execute(
             """
             INSERT INTO messages
                 (bus_id, discord_id, channel_id, thread_id, author_id, author_name,
-                 author_kind, content, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 author_kind, content, created_at, conversation_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(discord_id) DO UPDATE SET
                 bus_id      = excluded.bus_id,
+                conversation_id = COALESCE(messages.conversation_id,
+                                           excluded.conversation_id),
                 channel_id  = excluded.channel_id,
                 thread_id   = excluded.thread_id,
                 author_id   = excluded.author_id,
@@ -432,7 +440,7 @@ class Database:
                 created_at  = excluded.created_at
             """,
             (bus_id, discord_id, channel_id, thread_id, author_id,
-             author_name, author_kind, content, created_at),
+             author_name, author_kind, content, created_at, conversation_id),
         )
         await self._conn.commit()
         return await self._seq_for(discord_id)

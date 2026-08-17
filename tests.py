@@ -87,6 +87,23 @@ async def main():
           r["text"] == "text worth keeping", r["text"])
     check("gateway still merged its own columns", r["kind"] == "note")
 
+    print("\nhuman messages seed a conversation")
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="400", channel_id="c1",
+                             thread_id=None, author_id="99", author_name="Envy",
+                             author_kind="human", content="discuss X", created_at=5000.0,
+                             conversation_id="c_seed")
+    r = [m for m in await db.messages_after(bus_a["bus_id"]) if m["id"] == "400"][0]
+    check("human message carries a conversation_id", r["conversation_id"] == "c_seed",
+          r["conversation_id"])
+    # a gateway replay must not re-seed it with a fresh id
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="400", channel_id="c1",
+                             thread_id=None, author_id="99", author_name="Envy",
+                             author_kind="human", content="discuss X", created_at=5000.0,
+                             conversation_id="c_DIFFERENT")
+    r = [m for m in await db.messages_after(bus_a["bus_id"]) if m["id"] == "400"][0]
+    check("replay does not re-seed the conversation", r["conversation_id"] == "c_seed",
+          r["conversation_id"])
+
     print("\nTENANT ISOLATION")
     await db.record_observed(bus_id=bus_b["bus_id"], discord_id="900", channel_id="c2",
                              thread_id=None, author_id="9", author_name="stranger",
@@ -96,10 +113,10 @@ async def main():
     b_rows = await db.messages_after(bus_b["bus_id"], after=0, limit=200)
     check("bus A cannot see bus B's messages",
           all("SECRET" not in m["text"] for m in a_rows), [m["text"] for m in a_rows])
-    check("bus A sees exactly its own 3", len(a_rows) == 3, len(a_rows))
+    check("bus A sees exactly its own 4", len(a_rows) == 4, len(a_rows))
     check("bus B sees exactly its own 1", len(b_rows) == 1, len(b_rows))
     check("bus A stats exclude bus B",
-          (await db.bus_stats(bus_a["bus_id"]))["messages_stored"] == 3)
+          (await db.bus_stats(bus_a["bus_id"]))["messages_stored"] == 4)
     # cursors are global, so a high `after` from one bus must not leak the other
     check("cross-bus cursor leaks nothing",
           await db.messages_after(bus_b["bus_id"], after=0) == b_rows)
