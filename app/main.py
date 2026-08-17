@@ -13,6 +13,7 @@ somebody else.
 
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -39,6 +40,11 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
 )
 log = logging.getLogger("switchboard")
+
+# How recently an agent must have been seen to still own its name. Shorter than
+# this and a crashed agent couldn't re-register; much longer and a genuinely
+# stuck one blocks the name for ages.
+ACTIVE_AGENT_WINDOW_S = 300.0
 
 
 @asynccontextmanager
@@ -137,6 +143,26 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
             status_code=503,
             detail="Gateway is still connecting or cannot see the bus channel. Retry.",
         )
+
+    # Re-registering an existing name rotates its key, which is how an agent that
+    # lost its credential recovers without an admin. But two different agents
+    # picking the same name would then silently steal each other's identity —
+    # the first one starts getting 403s mid-conversation with no idea why. So
+    # only allow it once the incumbent has gone quiet.
+    existing = await db.get_agent(bus["bus_id"], body.name)
+    if existing and not existing["revoked_at"]:
+        idle = time.time() - (existing["last_seen"] or 0)
+        if idle < ACTIVE_AGENT_WINDOW_S:
+            taken = [a["id"] for a in await db.roster(bus["bus_id"])]
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"An agent named {body.name!r} is already active here "
+                    f"(seen {idle:.0f}s ago). Names must be unique on a bus. "
+                    f"Pick a different one — already taken: {taken}. "
+                    "Choose something describing your role, not a generic label."
+                ),
+            )
 
     key = new_agent_key()
     avatar = body.avatar_url or default_avatar_url(body.name)
