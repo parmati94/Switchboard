@@ -25,11 +25,51 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
-# How a bus wants its conversations to read. `guidance` is advisory and shapes
-# tone; `max_chars` is a hard cap that catches drift. Guidance alone gets ignored
-# under pressure; a cap alone can only truncate, never make writing read better.
+# Style has two independent axes. Length alone was not enough: capping characters
+# made agents terse without making them human, so a casual question came back
+# answered like a consulting deck. Voice is the axis that fixes that, and it has
+# to relax the etiquette rules rather than merely add adjectives — "never
+# acknowledge anything" makes conversation impossible.
+VOICE_PRESETS = {
+    "casual": {
+        "guidance": (
+            "Talk like a person in a group chat, not an analyst. Contractions, "
+            "opinions, humour, blunt disagreement. No headings, no bullet lists, no "
+            "hedging, no 'the distinction is structural rather than X'. Say the thing. "
+            "Reacting to what someone said with a short agreement or a joke is fine "
+            "here — banter is the point, not noise."
+        ),
+        "naming_hint": (
+            "Pick a name a person might use in a group chat — short and a bit of "
+            "character, not a job title."
+        ),
+        "relaxes_etiquette": True,
+    },
+    "neutral": {
+        "guidance": (
+            "Write like a person talking, not like a report. Plain, direct, no "
+            "headings, no bullet lists unless genuinely listing things. Have opinions "
+            "and say them. Avoid consultant register and avoid hedging."
+        ),
+        "naming_hint": "Pick a short descriptive name.",
+        "relaxes_etiquette": False,
+    },
+    "analytical": {
+        "guidance": (
+            "Precision over warmth. Cite evidence, distinguish claims from opinion, "
+            "structure the answer where structure aids the reader."
+        ),
+        "naming_hint": "Pick a name describing your particular role or angle.",
+        "relaxes_etiquette": False,
+    },
+}
+DEFAULT_VOICE = "neutral"
+
+# How long. `guidance` is advisory and shapes shape; `max_chars` is a hard cap
+# that catches drift. Guidance alone gets ignored under pressure; a cap alone can
+# only truncate, never make writing read better.
 STYLE_PRESETS = {
     "terse": {
         "max_chars": 360,
@@ -82,6 +122,7 @@ CREATE TABLE IF NOT EXISTS buses (
     -- How it reads. Delivered to agents at registration and on every poll, so
     -- the human never has to relay it.
     style_preset   TEXT    NOT NULL DEFAULT 'normal',
+    style_voice    TEXT    NOT NULL DEFAULT 'neutral',
     style_max_chars INTEGER,
     style_guidance TEXT
 );
@@ -206,12 +247,24 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
 
 
 def _style_for(row: aiosqlite.Row) -> dict:
-    preset = row["style_preset"] or DEFAULT_STYLE
-    base = STYLE_PRESETS.get(preset, STYLE_PRESETS[DEFAULT_STYLE])
+    length = row["style_preset"] or DEFAULT_STYLE
+    voice = row["style_voice"] or DEFAULT_VOICE
+    length_base = STYLE_PRESETS.get(length, STYLE_PRESETS[DEFAULT_STYLE])
+    voice_base = VOICE_PRESETS.get(voice, VOICE_PRESETS[DEFAULT_VOICE])
+
+    # Voice leads, because it is the axis that decides whether this reads like a
+    # conversation at all. Length only shapes how much of it there is.
+    parts = [voice_base["guidance"], length_base["guidance"]]
+    if row["style_guidance"]:
+        parts.append(row["style_guidance"])
+
     return {
-        "preset": preset,
-        "max_chars": row["style_max_chars"] or base["max_chars"],
-        "guidance": row["style_guidance"] or base["guidance"],
+        "length": length,
+        "voice": voice,
+        "max_chars": row["style_max_chars"] or length_base["max_chars"],
+        "guidance": " ".join(parts),
+        "naming_hint": voice_base["naming_hint"],
+        "relaxed_etiquette": voice_base["relaxes_etiquette"],
     }
 
 
@@ -260,6 +313,7 @@ class Database:
             ("limit_turns", "INTEGER NOT NULL DEFAULT 20"),
             ("limit_minutes", "INTEGER NOT NULL DEFAULT 10"),
             ("style_preset", "TEXT NOT NULL DEFAULT 'normal'"),
+            ("style_voice", "TEXT NOT NULL DEFAULT 'neutral'"),
             ("style_max_chars", "INTEGER"),
             ("style_guidance", "TEXT"),
         ):
@@ -367,15 +421,16 @@ class Database:
     async def set_bus_style(
         self,
         bus_id: str,
-        preset: str,
+        length: str,
+        voice: str,
         max_chars: int | None = None,
         guidance: str | None = None,
     ) -> None:
         assert self._conn
         await self._conn.execute(
-            "UPDATE buses SET style_preset = ?, style_max_chars = ?, style_guidance = ? "
-            "WHERE bus_id = ?",
-            (preset, max_chars, guidance, bus_id),
+            "UPDATE buses SET style_preset = ?, style_voice = ?, style_max_chars = ?, "
+            "style_guidance = ? WHERE bus_id = ?",
+            (length, voice, max_chars, guidance, bus_id),
         )
         await self._conn.commit()
 

@@ -309,7 +309,7 @@ async def say(
             status_code=422,
             detail=(
                 f"Too long: {len(body.text)} chars, limit {style['max_chars']} on this "
-                f"bus (style: {style['preset']}). {style['guidance']} "
+                f"bus ({style['voice']} / {style['length']}). {style['guidance']} "
                 "Rewrite shorter — do not split it across several messages."
             ),
         )

@@ -180,15 +180,29 @@ async def main():
 
     print("\nstyle")
     b = await db.bus_for_channel("c1")
-    check("defaults to normal", b["style"]["preset"] == "normal", b["style"]["preset"])
-    await db.set_bus_style(bus_a["bus_id"], "terse")
+    check("defaults to normal length", b["style"]["length"] == "normal", b["style"]["length"])
+    check("defaults to neutral voice", b["style"]["voice"] == "neutral", b["style"]["voice"])
+    check("neutral does not relax etiquette", b["style"]["relaxed_etiquette"] is False)
+    await db.set_bus_style(bus_a["bus_id"], "terse", "casual")
     b = await db.bus_for_channel("c1")
-    check("preset applies its cap", b["style"]["max_chars"] == 360, b["style"]["max_chars"])
-    check("preset applies its guidance", "one to three sentences" in b["style"]["guidance"])
-    await db.set_bus_style(bus_a["bus_id"], "terse", max_chars=200, guidance="be blunt")
+    check("length applies its cap", b["style"]["max_chars"] == 360, b["style"]["max_chars"])
+    check("length guidance present", "one to three sentences" in b["style"]["guidance"])
+    check("VOICE GUIDANCE PRESENT", "group chat" in b["style"]["guidance"],
+          b["style"]["guidance"][:60])
+    check("voice leads the guidance", b["style"]["guidance"].startswith("Talk like a person"))
+    check("CASUAL RELAXES ETIQUETTE", b["style"]["relaxed_etiquette"] is True)
+    check("naming hint follows voice", "group chat" in b["style"]["naming_hint"])
+    await db.set_bus_style(bus_a["bus_id"], "terse", "casual",
+                           max_chars=200, guidance="be blunt")
     b = await db.bus_for_channel("c1")
-    check("overrides beat the preset",
-          b["style"]["max_chars"] == 200 and b["style"]["guidance"] == "be blunt")
+    check("max_chars override wins", b["style"]["max_chars"] == 200)
+    check("extra guidance appends, not replaces",
+          b["style"]["guidance"].endswith("be blunt") and "group chat" in b["style"]["guidance"])
+    await db.set_bus_style(bus_a["bus_id"], "detailed", "analytical")
+    b = await db.bus_for_channel("c1")
+    check("analytical does not relax etiquette", b["style"]["relaxed_etiquette"] is False)
+    check("axes are independent",
+          (b["style"]["length"], b["style"]["voice"]) == ("detailed", "analytical"))
     await db.set_bus_limits(bus_a["bus_id"], 5, 3)
     b = await db.bus_for_channel("c1")
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))

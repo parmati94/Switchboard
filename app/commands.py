@@ -172,7 +172,8 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             f"Messages recorded: {stats['messages_stored']}\n"
             f"Cursor head: {stats['head_seq']}\n"
             f"Limits: {bus['limit_turns']} turns / {bus['limit_minutes']} min\n"
-            f"Style: {bus['style']['preset']} (max {bus['style']['max_chars']} chars)",
+            f"Style: {bus['style']['voice']} / {bus['style']['length']} "
+            f"(max {bus['style']['max_chars']} chars)",
             ephemeral=True,
         )
 
@@ -351,20 +352,27 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
     @group.command(name="style", description="Set how agents write on this bus")
     @app_commands.describe(
-        preset="terse = chat-length · normal = a short paragraph · detailed = structured",
+        voice="How they sound. This is the one that stops them talking like analysts.",
+        length="How much they write.",
         max_chars="Optional hard cap override (100-1900)",
-        guidance="Optional extra instruction, e.g. 'plain English, no jargon'",
+        guidance="Optional extra instruction, e.g. 'no jargon, assume no context'",
     )
     @app_commands.choices(
-        preset=[
+        voice=[
+            app_commands.Choice(name="casual — like a group chat", value="casual"),
+            app_commands.Choice(name="neutral — plain and human", value="neutral"),
+            app_commands.Choice(name="analytical — precise and structured", value="analytical"),
+        ],
+        length=[
             app_commands.Choice(name="terse — one to three sentences", value="terse"),
             app_commands.Choice(name="normal — a short paragraph", value="normal"),
-            app_commands.Choice(name="detailed — structured and thorough", value="detailed"),
-        ]
+            app_commands.Choice(name="detailed — thorough", value="detailed"),
+        ],
     )
     async def style(
         interaction: discord.Interaction,
-        preset: app_commands.Choice[str],
+        voice: app_commands.Choice[str],
+        length: app_commands.Choice[str] | None = None,
         max_chars: app_commands.Range[int, 100, 1900] | None = None,
         guidance: str | None = None,
     ) -> None:
@@ -374,15 +382,27 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             await interaction.followup.send(_no_bus_message(), ephemeral=True)
             return
 
-        await db.set_bus_style(bus["bus_id"], preset.value, max_chars, guidance)
+        chosen_length = length.value if length else bus["style"]["length"]
+        await db.set_bus_style(
+            bus["bus_id"], chosen_length, voice.value, max_chars, guidance
+        )
         effective = (await db.bus_for_channel(str(interaction.channel_id)))["style"]
+
+        note = ""
+        if effective["relaxed_etiquette"]:
+            note = (
+                "\nEtiquette is relaxed on casual: short agreements and jokes are "
+                "allowed, since forbidding them is what made conversation impossible."
+            )
+
         await interaction.followup.send(
-            f"Style on `{bus['bus_id']}` set to **{preset.value}** "
-            f"(hard cap {effective['max_chars']} chars).\n"
-            f"> {effective['guidance']}\n\n"
-            "Agents receive this at registration and again on every poll, so it "
+            f"Style on `{bus['bus_id']}`: **{voice.value}** voice, "
+            f"**{chosen_length}** length, {effective['max_chars']} char cap.\n"
+            f"> {effective['guidance']}"
+            + note
+            + "\n\nAgents get this at registration and again on every poll, so it "
             "applies immediately — including to ones already running. You don't "
-            "need to tell them.",
+            "need to tell them anything.",
             ephemeral=True,
         )
 
