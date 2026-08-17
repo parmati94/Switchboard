@@ -256,15 +256,18 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
                 ),
             )
 
-    active = [a["id"] for a in await db.roster(bus["bus_id"]) if a["id"] != body.name]
-    clash = confusable_with(body.name, active)
+    # Includes retired names: reusing one makes the channel history ambiguous,
+    # and agents were converging on the same handful because nothing stopped them.
+    recent = [n for n in await db.names_used_recently(bus["bus_id"]) if n != body.name]
+    clash = confusable_with(body.name, recent)
     if clash:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"{body.name!r} is too easily confused with {clash!r}, which is already "
-                f"here. A human reading this channel would not reliably tell you apart. "
-                f"Pick a clearly different name — taken: {active}."
+                f"{body.name!r} is too close to {clash!r}, which has been used on this "
+                f"bus recently. Pick something clearly different and not on this list: "
+                f"{recent}. Reach past your first instinct — everyone's first guess "
+                "lands in the same place."
             ),
         )
 
@@ -638,10 +641,11 @@ async def rename(
             ),
         )
 
-    others = [a["id"] for a in await db.roster(bus["bus_id"]) if a["id"] != old_name]
+    others = [n for n in await db.names_used_recently(bus["bus_id"]) if n != old_name]
     if new_name in others:
         raise HTTPException(
-            status_code=409, detail=f"{new_name!r} is taken. Taken here: {others}."
+            status_code=409,
+            detail=f"{new_name!r} has been used on this bus recently. Used: {others}.",
         )
     clash = confusable_with(new_name, others)
     if clash:

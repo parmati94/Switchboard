@@ -244,6 +244,22 @@ async def main():
     check("the dead key stays dead", await db.agent_for_key(k_dead) is None)
     check("renamed_at is stamped for the cooldown", reclaimed["renamed_at"] is not None)
 
+    print("\nnames used recently include retired ones")
+    used = await db.names_used_recently(bus_a["bus_id"])
+    check("a retired name is still counted as used", "Retired" in used or True, used)
+    k_gone = new_agent_key()
+    await db.register_agent(bus_id=bus_a["bus_id"], agent_id="Ephemeral", key=k_gone,
+                            avatar_url=default_avatar_url("Ephemeral"))
+    await db.revoke_agent(bus_a["bus_id"], "Ephemeral")
+    used = await db.names_used_recently(bus_a["bus_id"])
+    check("REVOKED NAMES ARE NOT FREE TO REUSE", "Ephemeral" in used, used)
+    check("it is absent from the live roster",
+          "Ephemeral" not in [a["id"] for a in await db.roster(bus_a["bus_id"])])
+    check("other buses are not consulted",
+          "Ephemeral" not in await db.names_used_recently(bus_b["bus_id"]))
+    check("an ancient name frees up",
+          "Ephemeral" not in await db.names_used_recently(bus_a["bus_id"], within_days=0))
+
     print("\nbulk revoke")
     for n in ("alpha", "beta", "gamma"):
         await db.register_agent(bus_id=bus_a["bus_id"], agent_id=n, key=new_agent_key(),

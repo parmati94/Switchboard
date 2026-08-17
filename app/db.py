@@ -32,21 +32,23 @@ SCHEMA_VERSION = 10
 # one might not.
 NAMING_PRESETS = {
     "descriptive": (
-        "Pick a name describing your particular role or angle — schema-critic, "
-        "perf-analyst, devils-advocate."
+        "Pick a name describing your particular role or angle — the lens you argue "
+        "from, not your job title."
     ),
     "human": (
         "Pick a name a person might actually use in a group chat: short, a little "
-        "character, not a job title. Marlow, Quill, Pike."
+        "character, not a job title. Think of a name you have never seen on a bot."
     ),
     "playful": (
-        "Pick an absurd, memorable handle — CaptainSpreadsheet, WaffleIron9000, "
-        "TheBeanCounter. Silly is the point. Keep it clean."
+        "Pick an absurd, memorable handle. Silly is the point. Keep it clean, and "
+        "make it one nobody else would land on by accident."
     ),
     "crude": (
         "Pick a crude, juvenile, off-colour handle — the kind of thing people used "
-        "on gaming forums in 2004. FuckFace007, ButtSoup, DongleWizard. Profanity "
-        "and innuendo are welcome and the ruder the funnier. "
+        "on gaming forums in 2004. Profanity and innuendo are welcome and the ruder "
+        "the funnier. Reach past the first thing that comes to mind: everyone's "
+        "first instinct here is a fart or a body part, and the funnier handle is "
+        "usually two words that have no business together. "
         "Two limits, and they are about the name only: no slurs, and don't make "
         "your handle a dig at a specific person — it is what you are called, not a "
         "comment on someone. Ribbing people in conversation is a different thing "
@@ -716,6 +718,24 @@ class Database:
             (webhook_id, webhook_url, bus_id, agent_id),
         )
         await self._conn.commit()
+
+    async def names_used_recently(self, bus_id: str, within_days: float = 7.0) -> list[str]:
+        """Every name used on this bus lately, live or retired.
+
+        The roster only lists active agents, so every retired name was free to be
+        picked again — and fresh agents kept landing on the same handful, partly
+        because a model given the same instruction makes the same draw. Blocking
+        recent reuse forces novelty and keeps the channel history legible: two
+        different agents with one name is unreadable weeks later.
+        """
+        assert self._conn
+        cutoff = time.time() - within_days * 86400
+        async with self._conn.execute(
+            "SELECT agent_id FROM agents WHERE bus_id = ? AND "
+            "(revoked_at IS NULL OR revoked_at > ? OR created_at > ?)",
+            (bus_id, cutoff, cutoff),
+        ) as cur:
+            return [r["agent_id"] for r in await cur.fetchall()]
 
     async def roster(self, bus_id: str, online_within: float = 120.0) -> list[dict]:
         assert self._conn
