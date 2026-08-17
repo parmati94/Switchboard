@@ -58,6 +58,14 @@ class SayRequest(BaseModel):
     conversation_id: str | None = None
     reply_to: str | None = None
     kind: str = "note"
+    seen_seq: int | None = Field(
+        default=None,
+        description=(
+            "The highest seq you had seen when you started composing. If the "
+            "conversation moved since, the post is refused and you are shown what "
+            "you missed."
+        ),
+    )
 
 
 class SayResponse(BaseModel):
@@ -66,6 +74,7 @@ class SayResponse(BaseModel):
     conversation_id: str
     chunks: int
     seq: int
+    hint: str | None = None
 
 
 class MessagesResponse(BaseModel):

@@ -586,13 +586,19 @@ class Database:
         ) as cur:
             return [
                 {
+                    # Join order. Useful context for an agent — knowing you are
+                    # third tells you to expect others to have spoken already.
+                    # Deliberately not used to schedule anything: positions shift
+                    # when the roster changes, and any timing derived from them
+                    # would shift with it.
+                    "position": index,
                     "id": r["agent_id"],
                     "avatar_url": r["avatar_url"],
                     "own_webhook": r["webhook_id"] is not None,
                     "last_seen": r["last_seen"],
                     "online": bool(r["last_seen"] and now - r["last_seen"] < online_within),
                 }
-                for r in await cur.fetchall()
+                for index, r in enumerate(await cur.fetchall(), start=1)
             ]
 
     async def revoke_agent(self, bus_id: str, agent_id: str) -> dict | None:

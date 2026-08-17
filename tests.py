@@ -223,6 +223,45 @@ async def main():
     check("other bus key still works", await db.agent_for_key(k_other) is not None)
     check("clearing twice is a no-op", await db.revoke_all_agents(bus_a["bus_id"]) == [])
 
+    print("\ncompare-and-swap: what a composing agent missed")
+    conv = "c_race"
+    await db.open_conversation(bus_a["bus_id"], conv)
+    # marlow reads up to here, then starts composing
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="r0", channel_id="c1",
+        thread_id=None, author_id="9", author_name="Envy", author_kind="human",
+        content="what about X", created_at=7000.0, conversation_id=conv)
+    seen = (await db.messages_after(bus_a["bus_id"], conversation_id=conv))[-1]["seq"]
+    # while it composes, quill replies
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="r1", channel_id="c1",
+        thread_id=None, author_id="8", author_name="quill", author_kind="agent",
+        content="X is overrated", created_at=7010.0, conversation_id=conv)
+    missed = [m for m in await db.messages_after(bus_a["bus_id"], after=seen,
+              conversation_id=conv) if m["from"] != "marlow"]
+    check("marlow is shown what it missed", len(missed) == 1, missed)
+    check("and by whom", missed[0]["from"] == "quill", missed[0]["from"])
+    # quill posting again does not flag itself
+    own = [m for m in await db.messages_after(bus_a["bus_id"], after=seen,
+           conversation_id=conv) if m["from"] != "quill"]
+    check("AN AGENT IS NEVER BLOCKED BY ITS OWN MESSAGE", own == [], own)
+    # nothing new -> no conflict
+    latest = (await db.messages_after(bus_a["bus_id"], conversation_id=conv))[-1]["seq"]
+    check("caught-up agent posts freely",
+          [m for m in await db.messages_after(bus_a["bus_id"], after=latest,
+           conversation_id=conv) if m["from"] != "marlow"] == [])
+    # a different conversation must not block this one
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="r2", channel_id="c1",
+        thread_id=None, author_id="8", author_name="quill", author_kind="agent",
+        content="unrelated", created_at=7020.0, conversation_id="c_other")
+    check("other conversations do not interfere",
+          [m for m in await db.messages_after(bus_a["bus_id"], after=latest,
+           conversation_id=conv) if m["from"] != "marlow"] == [])
+
+    print("\nroster positions")
+    pos = await db.roster(bus_a["bus_id"])
+    check("positions follow join order",
+          [a["position"] for a in pos] == list(range(1, len(pos) + 1)),
+          [(a["position"], a["id"]) for a in pos])
+
     print("\nsecret lifecycle")
     rotated = new_bus_secret()
     await db.rotate_bus_secret(bus_a["bus_id"], rotated)

@@ -416,6 +416,38 @@ async def say(
             ),
         )
 
+    # Compare-and-swap on the conversation. Every waiting agent is woken by the
+    # same message and composes in parallel for 10-30 seconds, blind to the
+    # others — which is why several land at once making the same observation.
+    # Staggering wake-ups cannot fix that: any delay short enough to keep replies
+    # snappy is far shorter than the time spent composing. So instead, refuse a
+    # post into a conversation that moved while it was being written, and show
+    # the writer what it missed.
+    if body.seen_seq is not None:
+        missed = [
+            m
+            for m in await db.messages_after(
+                bus["bus_id"], after=body.seen_seq, limit=50,
+                conversation_id=conversation_id,
+            )
+            if m["from"] != name
+        ]
+        if missed:
+            speakers = ", ".join(dict.fromkeys(m["from"] for m in missed))
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": f"{speakers} posted while you were composing.",
+                    "what_to_do": (
+                        "Read these, then decide whether your point still adds "
+                        "anything. Usually it does not — staying silent is the "
+                        "right outcome. Do NOT resend the same text."
+                    ),
+                    "missed": missed,
+                    "seen_seq": max(m["seq"] for m in missed),
+                },
+            )
+
     # Limits are checked before sending, so an over-budget message never reaches
     # the channel. Turns bound cost, minutes rescue a stuck or slow exchange.
     turns_used = await db.agent_turns_used(bus["bus_id"], conversation_id)
@@ -504,12 +536,24 @@ async def say(
     # message coming back from Discord — a round trip they shouldn't pay for.
     request.app.state.notifier.notify(bus["bus_id"])
 
+    # Agents that registered before seen_seq existed keep working, but get no
+    # protection. Telling them in the response propagates the change without
+    # breaking them or requiring a restart.
+    hint = None
+    if body.seen_seq is None:
+        hint = (
+            "Send `seen_seq` (the highest seq you had seen when you started "
+            "composing) on future posts. Without it, you and the other agents "
+            "reply blind to each other and duplicate the same point."
+        )
+
     return SayResponse(
         ok=True,
         message_ids=message_ids,
         conversation_id=conversation_id,
         chunks=len(message_ids),
         seq=seq,
+        hint=hint,
     )
 
 
