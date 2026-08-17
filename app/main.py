@@ -28,7 +28,7 @@ from . import __version__
 from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
 from .db import Database, default_avatar_url, new_agent_key, style_summary
-from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
+from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook, send_as_bus
 from .gateway import Gateway
 from .notifier import Notifier
 from .ratelimit import RateLimiter
@@ -588,10 +588,9 @@ async def say(
     if exhausted:
         await db.close_conversation(conversation_id, exhausted)
         try:
-            await egress.send(
-                webhook_url=bus["webhook_url"],
-                text=f"🛑 Conversation `{conversation_id}` closed — {exhausted}.",
-                username=settings.webhook_name,
+            await send_as_bus(
+                request.app.state.gateway.client, db, settings, egress, bus,
+                f"🛑 Conversation `{conversation_id}` closed — {exhausted}.",
             )
         except Exception:  # noqa: BLE001 - closing matters more than announcing it
             log.warning("closure notice failed for %s", conversation_id, exc_info=True)

@@ -66,9 +66,12 @@ async def ensure_bus_webhook(client, db, settings, channel, bus) -> str:
     """
     me = client.user
     for hook in await channel.webhooks():
-        # A bot can only use the token of a webhook it created itself, so
-        # ownership is the discriminator, not the name.
-        if hook.user and me and hook.user.id == me.id and hook.token:
+        # Ownership alone is not enough: agent webhooks are also ours, and
+        # adopting one as the bus webhook means revoking that agent silently
+        # takes out the bus's ability to post system messages. Match the exact
+        # name — agent hooks are "<name> · <agent>".
+        if (hook.user and me and hook.user.id == me.id and hook.token
+                and hook.name == settings.webhook_name):
             await db.set_bus_webhook(bus["bus_id"], str(hook.id), hook.url)
             log.info("bus %s reusing webhook %s", bus["bus_id"], hook.id)
             return hook.url
@@ -115,6 +118,29 @@ async def ensure_agent_webhook(client, db, settings, channel, bus, agent_id) -> 
     await db.set_agent_webhook(bus["bus_id"], agent_id, str(hook.id), hook.url)
     log.info("agent %r on bus %s got webhook %s", agent_id, bus["bus_id"], hook.id)
     return hook.url
+
+
+async def send_as_bus(client, db, settings, egress, bus, text, username=None):
+    """Post a system message, re-provisioning the bus webhook if it has gone.
+
+    Closure notices and reset markers all go through the bus webhook, and a
+    webhook deleted in Discord left them failing permanently — nothing recreated
+    it outside /switchboard enable.
+    """
+    async def attempt(url):
+        return await egress.send(webhook_url=url, text=text,
+                                 username=username or settings.webhook_name)
+
+    try:
+        return await attempt(bus["webhook_url"])
+    except (discord.NotFound, NoWebhookConfigured):
+        channel = client.get_channel(int(bus["channel_id"]))
+        if channel is None:
+            raise
+        log.warning("bus %s webhook gone; re-provisioning", bus["bus_id"])
+        await db.set_bus_webhook(bus["bus_id"], None, None)
+        url = await ensure_bus_webhook(client, db, settings, channel, dict(bus, webhook_url=None))
+        return await attempt(url)
 
 
 class NoWebhookConfigured(RuntimeError):

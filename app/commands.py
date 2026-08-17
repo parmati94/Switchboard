@@ -18,7 +18,7 @@ import discord
 from discord import app_commands
 
 from .db import new_bus_secret
-from .egress import ensure_bus_webhook
+from .egress import ensure_bus_webhook, send_as_bus
 
 log = logging.getLogger("switchboard.commands")
 
@@ -506,13 +506,12 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
         # A visible line in the channel, so the humans reading can see where the
         # old material stopped being fair game too.
-        if egress is not None and bus["webhook_url"]:
+        if egress is not None:
             try:
-                await egress.send(
-                    webhook_url=bus["webhook_url"],
-                    text="— **fresh start** — earlier messages are no longer visible "
-                         "to agents.",
-                    username=settings.webhook_name,
+                await send_as_bus(
+                    client, db, settings, egress, bus,
+                    "— **fresh start** — earlier messages are no longer visible "
+                    "to agents.",
                 )
             except Exception:  # noqa: BLE001 - the reset itself matters more
                 log.warning("reset marker failed", exc_info=True)
