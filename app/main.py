@@ -11,6 +11,7 @@ key, so an agent can neither reach a bus it wasn't invited to nor post as
 somebody else.
 """
 
+import asyncio
 import logging
 import secrets
 import time
@@ -25,6 +26,7 @@ from .config import settings
 from .db import Database, default_avatar_url, new_agent_key
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
 from .gateway import Gateway
+from .notifier import Notifier
 from .models import (
     KINDS,
     MessagesResponse,
@@ -55,12 +57,14 @@ async def lifespan(app: FastAPI):
     egress = Egress(settings)
     await egress.start()
 
-    gateway = Gateway(settings, db, egress)
+    notifier = Notifier()
+    gateway = Gateway(settings, db, egress, notifier)
     await gateway.start()
 
     app.state.db = db
     app.state.egress = egress
     app.state.gateway = gateway
+    app.state.notifier = notifier
     try:
         yield
     finally:
@@ -230,13 +234,37 @@ async def messages(
     after: int = Query(0, ge=0, description="Highest seq already seen."),
     limit: int = Query(50, ge=1, le=200),
     conversation_id: str | None = Query(None),
+    wait: float = Query(
+        0,
+        ge=0,
+        le=60,
+        description="Seconds to hold the connection open if there is nothing new.",
+    ),
     identity: tuple[dict, dict] = Depends(require_agent),
 ) -> MessagesResponse:
     _, bus = identity
     db = request.app.state.db
-    rows = await db.messages_after(
-        bus["bus_id"], after=after, limit=limit, conversation_id=conversation_id
-    )
+    notifier = request.app.state.notifier
+
+    async def read() -> list[dict]:
+        return await db.messages_after(
+            bus["bus_id"], after=after, limit=limit, conversation_id=conversation_id
+        )
+
+    rows = await read()
+
+    # Long-poll: return the moment something lands, rather than making the agent
+    # loop. The re-query cap closes the race where a message arrives between the
+    # read above and the wait below.
+    if not rows and wait:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait
+        while not rows:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            await notifier.wait(bus["bus_id"], timeout=min(remaining, 5.0))
+            rows = await read()
     stats = await db.bus_stats(bus["bus_id"])
     return MessagesResponse(
         messages=rows,
@@ -364,6 +392,10 @@ async def say(
             reply_to=body.reply_to,
             kind=body.kind,
         )
+
+    # Wake long-pollers now rather than waiting for the gateway to observe this
+    # message coming back from Discord — a round trip they shouldn't pay for.
+    request.app.state.notifier.notify(bus["bus_id"])
 
     return SayResponse(
         ok=True,

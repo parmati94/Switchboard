@@ -544,6 +544,22 @@ class Database:
         await self._conn.commit()
         return agent
 
+    async def revoke_all_agents(self, bus_id: str) -> list[dict]:
+        """Revoke every active agent. Returns the rows so webhooks can be cleaned up."""
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT * FROM agents WHERE bus_id = ? AND revoked_at IS NULL", (bus_id,)
+        ) as cur:
+            rows = [dict(r) for r in await cur.fetchall()]
+        if rows:
+            await self._conn.execute(
+                "UPDATE agents SET revoked_at = ?, key_hash = '' "
+                "WHERE bus_id = ? AND revoked_at IS NULL",
+                (time.time(), bus_id),
+            )
+            await self._conn.commit()
+        return rows
+
     # ---- messages --------------------------------------------------------
 
     async def record_observed(

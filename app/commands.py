@@ -12,6 +12,7 @@ human-only. Agents use the HTTP API.
 """
 
 import logging
+import time
 
 import discord
 from discord import app_commands
@@ -20,6 +21,10 @@ from .db import new_bus_secret
 from .egress import ensure_bus_webhook
 
 log = logging.getLogger("switchboard.commands")
+
+# Sentinel value for "clear the whole roster", surfaced via autocomplete so it
+# is one click rather than a name you have to know.
+ALL_AGENTS = "*"
 
 
 def _no_bus_message() -> str:
@@ -172,7 +177,12 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
 
     @group.command(name="rotate", description="Issue a new bootstrap secret")
-    async def rotate(interaction: discord.Interaction) -> None:
+    @app_commands.describe(
+        clear_agents="Also revoke every registered agent (default: no)"
+    )
+    async def rotate(
+        interaction: discord.Interaction, clear_agents: bool = False
+    ) -> None:
         await interaction.response.defer(ephemeral=True)
         bus = await db.bus_for_channel(str(interaction.channel_id))
         if not bus:
@@ -181,15 +191,29 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
         secret = new_bus_secret()
         await db.rotate_bus_secret(bus["bus_id"], secret)
+
+        # Agent keys are independent of the bootstrap secret by design — an
+        # agent shouldn't lose its credential because you re-keyed the door.
+        # But that means rotating alone leaves the roster untouched, which
+        # surprises people, so make clearing a one-flag option.
+        cleared = ""
+        if clear_agents:
+            rows = await db.revoke_all_agents(bus["bus_id"])
+            await _cleanup_webhooks(rows)
+            cleared = f"\nAlso revoked **{len(rows)} agent(s)** and deleted their webhooks."
+
         base = settings.public_url.rstrip("/")
         await interaction.followup.send(
             f"**New bootstrap secret** for `{bus['bus_id']}`. The previous one no "
             "longer works, so anything using it must be given this:\n"
             f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
-            "Read the root path first.\n```",
+            "Read the root path first.\n```"
+            + cleared
+            + ("\n\nExisting agents keep their own keys and are unaffected — pass "
+               "`clear_agents: True` if you wanted a full reset." if not clear_agents else ""),
             ephemeral=True,
         )
-        log.info("bus %s secret rotated", bus["bus_id"])
+        log.info("bus %s secret rotated (clear_agents=%s)", bus["bus_id"], clear_agents)
 
     @group.command(name="roster", description="Show agents registered on this bus")
     async def roster(interaction: discord.Interaction) -> None:
@@ -208,24 +232,60 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             )
             return
 
+        now = time.time()
         lines = []
         for a in agents:
             dot = "🟢" if a["online"] else "⚪"
-            hook = "own webhook" if a["own_webhook"] else "shared webhook"
-            lines.append(f"{dot} **{a['id']}** — {hook}")
+            if a["last_seen"]:
+                age = now - a["last_seen"]
+                seen = f"{age:.0f}s ago" if age < 90 else f"{age / 60:.0f}m ago"
+            else:
+                seen = "never"
+            lines.append(f"{dot} **{a['id']}** — last seen {seen}")
+        stale = sum(1 for a in agents if not a["online"])
         await interaction.followup.send(
             f"**{len(agents)} agent(s)** on `{bus['bus_id']}`\n" + "\n".join(lines)
-            + "\n\n🟢 = seen in the last 2 minutes.",
+            + "\n\n🟢 = seen in the last 2 minutes."
+            + (f"\n{stale} look gone — `/switchboard revoke` and pick **all agents** "
+               "to clear them out." if stale else ""),
             ephemeral=True,
         )
 
-    @group.command(name="revoke", description="Revoke an agent's credentials")
-    @app_commands.describe(agent="Agent name, as shown in /switchboard roster")
+    async def _cleanup_webhooks(rows: list[dict]) -> int:
+        deleted = 0
+        for row in rows:
+            if egress is not None and row.get("webhook_url"):
+                try:
+                    await egress.delete_webhook(row["webhook_url"])
+                    deleted += 1
+                except Exception:  # noqa: BLE001
+                    log.exception("failed deleting webhook for %r", row["agent_id"])
+        return deleted
+
+    @group.command(name="revoke", description="Revoke one agent, or clear them all")
+    @app_commands.describe(agent="Pick an agent, or 'all agents' to clear the roster")
     async def revoke(interaction: discord.Interaction, agent: str) -> None:
         await interaction.response.defer(ephemeral=True)
         bus = await db.bus_for_channel(str(interaction.channel_id))
         if not bus:
             await interaction.followup.send(_no_bus_message(), ephemeral=True)
+            return
+
+        if agent == ALL_AGENTS:
+            rows = await db.revoke_all_agents(bus["bus_id"])
+            if not rows:
+                await interaction.followup.send("No active agents to clear.", ephemeral=True)
+                return
+            deleted = await _cleanup_webhooks(rows)
+            names = ", ".join(f"`{r['agent_id']}`" for r in rows)
+            await interaction.followup.send(
+                f"Cleared **{len(rows)} agent(s)**: {names}\n"
+                f"{deleted} webhook(s) deleted. The roster is now empty.\n"
+                "They can rejoin with the bootstrap secret — `/switchboard rotate` "
+                "as well if you want a clean break.",
+                ephemeral=True,
+            )
+            log.info("all %d agents revoked on bus %s", len(rows), bus["bus_id"])
             return
 
         revoked = await db.revoke_agent(bus["bus_id"], agent)
@@ -239,14 +299,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
         # Deleting the webhook is what actually silences them; invalidating the
         # key only stops them asking Switchboard to speak on their behalf.
-        deleted = False
-        if egress is not None and revoked.get("webhook_url"):
-            try:
-                await egress.delete_webhook(revoked["webhook_url"])
-                deleted = True
-            except Exception:  # noqa: BLE001
-                log.exception("failed deleting webhook for %r", agent)
-
+        deleted = await _cleanup_webhooks([revoked])
         await interaction.followup.send(
             f"**{agent}** revoked. Its key no longer works"
             + (" and its webhook is deleted." if deleted else ".")
@@ -254,6 +307,22 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             ephemeral=True,
         )
         log.info("agent %r revoked on bus %s", agent, bus["bus_id"])
+
+    @revoke.autocomplete("agent")
+    async def _revoke_autocomplete(
+        interaction: discord.Interaction, current: str
+    ) -> list[app_commands.Choice[str]]:
+        """Saves typing exact names, and puts 'all agents' one click away."""
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            return []
+        agents = await db.roster(bus["bus_id"])
+        choices = [app_commands.Choice(name=f"★ all agents ({len(agents)})", value=ALL_AGENTS)]
+        for a in agents:
+            if current.lower() in a["id"].lower():
+                mark = "🟢" if a["online"] else "⚪"
+                choices.append(app_commands.Choice(name=f"{mark} {a['id']}", value=a["id"]))
+        return choices[:25]
 
     @group.command(name="limits", description="Set when conversations end on this bus")
     @app_commands.describe(

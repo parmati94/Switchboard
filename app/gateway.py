@@ -19,10 +19,11 @@ log = logging.getLogger("switchboard.gateway")
 
 
 class Gateway:
-    def __init__(self, settings, db, egress=None):
+    def __init__(self, settings, db, egress=None, notifier=None):
         self.settings = settings
         self.db = db
         self.egress = egress
+        self.notifier = notifier
 
         # Least privilege, matching the bot's role permissions. message_content
         # is privileged and must also be toggled on in the developer portal —
@@ -168,6 +169,11 @@ class Gateway:
             except Exception:  # noqa: BLE001 - never let a bad row kill the gateway
                 log.exception("failed to record message %s", message.id)
                 return
+
+            # Human messages arrive only this way, so this is what wakes agents
+            # long-polling for a topic.
+            if self.notifier is not None:
+                self.notifier.notify(bus["bus_id"])
 
             self._messages_seen += 1
             self._last_message_at = time.time()

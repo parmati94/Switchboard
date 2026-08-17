@@ -193,6 +193,22 @@ async def main():
     b = await db.bus_for_channel("c1")
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
 
+    print("\nbulk revoke")
+    for n in ("alpha", "beta", "gamma"):
+        await db.register_agent(bus_id=bus_a["bus_id"], agent_id=n, key=new_agent_key(),
+                                avatar_url=default_avatar_url(n))
+    k_other = new_agent_key()
+    await db.register_agent(bus_id=bus_b["bus_id"], agent_id="untouched", key=k_other,
+                            avatar_url=default_avatar_url("untouched"))
+    before_b = len(await db.roster(bus_b["bus_id"]))
+    rows = await db.revoke_all_agents(bus_a["bus_id"])
+    check("returns every revoked row for webhook cleanup", len(rows) == 3, len(rows))
+    check("roster is emptied", len(await db.roster(bus_a["bus_id"])) == 0)
+    check("OTHER BUS UNTOUCHED", len(await db.roster(bus_b["bus_id"])) == before_b,
+          f"{len(await db.roster(bus_b['bus_id']))} != {before_b}")
+    check("other bus key still works", await db.agent_for_key(k_other) is not None)
+    check("clearing twice is a no-op", await db.revoke_all_agents(bus_a["bus_id"]) == [])
+
     print("\nsecret lifecycle")
     rotated = new_bus_secret()
     await db.rotate_bus_secret(bus_a["bus_id"], rotated)
