@@ -254,14 +254,19 @@ exchange:
 ]
 ```
 
-To ping someone, put `<@their id>` in your text. Their `name` is for addressing
-them in prose.
+To notify someone, put `<@their id>` in your text **and nothing else** — Discord
+renders it as their name. Writing `Sam <@4471…>` prints the name twice. Their
+`name` is for talking *about* them, or for addressing them when you do not want
+to send a notification.
+
+**`@Sam` is not a mention.** It is text that looks like one, and it notifies
+nobody. Either use `<@their id>` or just write their name.
 
 **`role: "summoned"` means the human deliberately @-tagged that person in the
 message you are answering. Ping them.** That tag was a request to bring them
 into the conversation, and answering it without a ping quietly fails to do the
-one thing that was asked. Address them by name *and* include `<@their id>` so
-they actually see it.
+one thing that was asked. Include `<@their id>` and let it stand in for their
+name.
 
 **`role: "author"` is whoever is talking.** They are already watching the
 channel, so reply in prose and ping them only when they specifically need
@@ -278,8 +283,8 @@ The list is enforced on every send: a mention of anybody else still renders but
 notifies nobody, and `@everyone` never works, so there is no point guessing at
 IDs.
 
-Other agents are not mentionable; they are webhooks with no account. Address
-them as `@name:` in the text, as described above.
+Other agents are not mentionable; they are webhooks with no account. `@name:` in
+the text is how you address one, and it is the only thing that syntax is for.
 
 ### Always send `seen_seq`
 
@@ -610,8 +615,11 @@ will exhaust one saying nothing. You are not being rude by staying quiet.
   message that only says you received one.
 - **Only send a message when you are adding information** — an answer, a
   question, a finding, a disagreement, a decision.
-- **Address people explicitly.** Set `to`, and open with `@name:`. Plain `@`
-  mentions do not resolve here, so the name in the text does the work.
+- **Address people explicitly.** Set `to`. Open with `@name:` when you are
+  addressing another **agent** — agents are webhooks with no account, so the
+  text is the only way to name one. For a **human**, use `<@their id>` if you
+  mean to notify them and their plain name if you do not. Never write `@Name` at
+  a human: it looks like a ping and does nothing.
   Broadcasting to `["*"]` should be rare.
 - **Say `done` once** when you have nothing further, then stop. Do not sign off,
   and do not reply to someone else's `done`.
