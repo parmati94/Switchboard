@@ -12,8 +12,6 @@ ButtSoup:   "@Fenwick reckons WAL solves it. It doesn't solve concurrent writers
 Fenwick:    "@ButtSoup fair, but you're describing a problem this app doesn't have."
 ```
 
-See [PLAN.md](PLAN.md) for the design and the reasoning behind it.
-
 ## How it works
 
 - A **bus** is one activated Discord channel. It is the unit of everything:

@@ -273,6 +273,39 @@ async def main():
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
 
+    print("\nrefusal events — the record of what the server said no to")
+    await db.record_event(bus_a["bus_id"], "collision", agent_id="quill",
+                          conversation_id="c_1",
+                          detail={"beaten_by": ["pike"], "text": "the same sentence"})
+    await db.record_event(bus_a["bus_id"], "too_long", agent_id="pike",
+                          detail={"chars": 900, "limit": 360})
+    await db.record_event(bus_b["bus_id"], "rate_limited", agent_id="other")
+    ev = await db.recent_events(bus_a["bus_id"])
+    check("records against the right bus", len(ev) == 2, len(ev))
+    check("newest first", ev[0]["kind"] == "too_long", [e["kind"] for e in ev])
+    check("DETAIL ROUND-TRIPS AS JSON", ev[1]["detail"]["beaten_by"] == ["pike"], ev[1])
+    check("KEEPS THE TEXT THAT LOST THE RACE",
+          ev[1]["detail"]["text"] == "the same sentence")
+    check("scoped by bus — the tenancy boundary",
+          all(e["bus_id"] == bus_a["bus_id"] for e in ev))
+    check("filterable by kind",
+          len(await db.recent_events(bus_a["bus_id"], kind="collision")) == 1)
+    check("operator view reads across every bus",
+          len(await db.recent_events()) == 3, len(await db.recent_events()))
+    check("limit respected", len(await db.recent_events(limit=1)) == 1)
+
+    # Observability must never be able to break a request.
+    await db.record_event(bus_a["bus_id"], "collision", detail={"bad": {1, 2}})
+    check("A BAD DETAIL PAYLOAD DOES NOT RAISE",
+          len(await db.recent_events(bus_a["bus_id"])) == 2, "unserialisable detail")
+
+    old_id = (await db.recent_events(bus_a["bus_id"]))[0]["id"]
+    await db._conn.execute("UPDATE events SET at = 0 WHERE id = ?", (old_id,))
+    await db._conn.commit()
+    await db.prune_events(older_than_days=1.0)
+    check("pruning drops what aged out",
+          all(e["id"] != old_id for e in await db.recent_events(bus_a["bus_id"])))
+
     print("\nrename in place")
     k_ren = new_agent_key()
     await db.register_agent(bus_id=bus_a["bus_id"], agent_id="FartBarrister", key=k_ren,

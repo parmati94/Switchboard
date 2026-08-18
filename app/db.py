@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -282,6 +282,27 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_bus          ON messages(bus_id, seq);
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(bus_id, conversation_id);
+
+-- Refusals. Everything the server says no to is raised as an HTTPException and
+-- then gone, which means the most revealing behaviour on a bus -- two agents
+-- composing the same sentence and one losing the race -- leaves no trace at all.
+-- The messages table only ever holds what succeeded.
+--
+-- A table rather than an in-memory ring buffer specifically because redeploys
+-- are frequent, and a restart would otherwise wipe the experiment being watched.
+CREATE TABLE IF NOT EXISTS events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    at              REAL NOT NULL,
+    bus_id          TEXT NOT NULL,
+    conversation_id TEXT,
+    agent_id        TEXT,
+    -- collision (409) | too_long (422) | closed (423) | rate_limited (429)
+    kind            TEXT NOT NULL,
+    detail          TEXT                    -- JSON, shape varies by kind
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_bus ON events(bus_id, id);
+CREATE INDEX IF NOT EXISTS idx_events_at  ON events(at);
 """
 
 
@@ -432,6 +453,9 @@ class Database:
             (str(SCHEMA_VERSION),),
         )
         await self._conn.commit()
+        gone = await self.prune_events()
+        if gone:
+            log.info("pruned %d old event(s)", gone)
         log.info("ledger open at %s (schema v%d)", self.path, SCHEMA_VERSION)
 
     async def _columns(self, table: str) -> set[str]:
@@ -1093,3 +1117,78 @@ class Database:
         async with self._conn.execute("SELECT COUNT(*) AS n FROM messages") as cur:
             messages = (await cur.fetchone())["n"]
         return {"messages_stored": messages, "buses_enabled": await self.enabled_bus_count()}
+
+    # ---- events ----------------------------------------------------------
+
+    async def record_event(
+        self,
+        bus_id: str,
+        kind: str,
+        *,
+        agent_id: str | None = None,
+        conversation_id: str | None = None,
+        detail: dict | None = None,
+    ) -> None:
+        """Note a refusal. Never raises — observability must not break a request.
+
+        Called from the paths that reject a post. Those paths already have a
+        correct answer for the agent; a failure to write the audit row is not a
+        reason to turn that into a 500.
+        """
+        try:
+            assert self._conn
+            await self._conn.execute(
+                "INSERT INTO events (at, bus_id, conversation_id, agent_id, kind, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (time.time(), bus_id, conversation_id, agent_id, kind,
+                 json.dumps(detail) if detail else None),
+            )
+            await self._conn.commit()
+        except Exception:  # noqa: BLE001 - the request matters more than the record
+            log.warning("failed to record %s event on bus %s", kind, bus_id, exc_info=True)
+
+    async def recent_events(
+        self, bus_id: str | None = None, limit: int = 100, kind: str | None = None
+    ) -> list[dict]:
+        """Newest first. bus_id None reads across every bus, for the operator view."""
+        assert self._conn
+        clauses, params = [], []
+        if bus_id:
+            clauses.append("bus_id = ?")
+            params.append(bus_id)
+        if kind:
+            clauses.append("kind = ?")
+            params.append(kind)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        async with self._conn.execute(
+            f"SELECT * FROM events {where} ORDER BY id DESC LIMIT ?", params
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "at": r["at"],
+                "bus_id": r["bus_id"],
+                "conversation_id": r["conversation_id"],
+                "agent_id": r["agent_id"],
+                "kind": r["kind"],
+                "detail": json.loads(r["detail"]) if r["detail"] else None,
+            }
+            for r in rows
+        ]
+
+    async def prune_events(self, older_than_days: float = 30.0, keep_max: int = 50_000) -> int:
+        """Bound the table. Runs at startup, which is often enough given how
+        frequently this redeploys, with a row cap as the backstop for when it is
+        not. Returns how many rows went."""
+        assert self._conn
+        cutoff = time.time() - older_than_days * 86400
+        await self._conn.execute("DELETE FROM events WHERE at < ?", (cutoff,))
+        await self._conn.execute(
+            "DELETE FROM events WHERE id <= "
+            "(SELECT MAX(id) FROM events) - ?", (keep_max,),
+        )
+        await self._conn.commit()
+        async with self._conn.execute("SELECT changes() AS n") as cur:
+            return (await cur.fetchone())["n"]

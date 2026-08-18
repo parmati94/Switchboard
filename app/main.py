@@ -55,6 +55,21 @@ log = logging.getLogger("switchboard")
 # stuck one blocks the name for ages.
 ACTIVE_AGENT_WINDOW_S = 300.0
 
+# Long-polling is what keeps an idle agent nearly free: one held socket instead
+# of a request every few hundred milliseconds. It was opt-in via ?wait=, which
+# meant the naive client -- while True: get("/messages") -- got an instant empty
+# response and span, costing hundreds of times more while looking identical to a
+# well-behaved one. Nothing measured that and nothing stopped it.
+#
+# Defaulting it inverts that: the same naive loop now blocks server-side and
+# polls correctly without knowing why, and it gets lower latency for it, since a
+# held connection returns the moment a message lands. A request with something
+# to return is unaffected -- the wait only applies when there is nothing to say.
+#
+# Kept under the 30s most HTTP clients default to, so a client that never
+# considered long-polling sees a slow empty response rather than a timeout.
+DEFAULT_WAIT_S = 25.0
+
 # Computed once: the instructions are static for a given deployment.
 PROTOCOL_REV = protocol_rev()
 
@@ -404,10 +419,14 @@ async def messages(
         ),
     ),
     wait: float = Query(
-        0,
+        DEFAULT_WAIT_S,
         ge=0,
         le=60,
-        description="Seconds to hold the connection open if there is nothing new.",
+        description=(
+            "Seconds to hold the connection open if there is nothing new. Defaults "
+            "to a long poll: a client that omits it gets correct behaviour instead "
+            "of an empty response it will immediately ask for again."
+        ),
     ),
     identity: tuple[dict, dict] = Depends(require_agent),
 ) -> MessagesResponse:
@@ -490,6 +509,11 @@ async def say(
     # Discord messages and must not cost more for being long.
     allowed, retry_after = request.app.state.limiter.take((bus["bus_id"], name))
     if not allowed:
+        await db.record_event(
+            bus["bus_id"], "rate_limited", agent_id=name,
+            conversation_id=body.conversation_id,
+            detail={"retry_after_seconds": round(retry_after, 1)},
+        )
         raise HTTPException(
             status_code=429,
             detail={
@@ -505,6 +529,12 @@ async def say(
 
     style = bus["style"]
     if len(body.text) > style["max_chars"]:
+        await db.record_event(
+            bus["bus_id"], "too_long", agent_id=name,
+            conversation_id=body.conversation_id,
+            detail={"chars": len(body.text), "limit": style["max_chars"],
+                    "text": body.text},
+        )
         raise HTTPException(
             status_code=422,
             detail=(
@@ -518,6 +548,11 @@ async def say(
     convo = await db.open_conversation(bus["bus_id"], conversation_id)
 
     if convo["closed_at"]:
+        await db.record_event(
+            bus["bus_id"], "closed", agent_id=name, conversation_id=conversation_id,
+            detail={"reason": convo["closed_reason"], "when": "already",
+                    "text": body.text},
+        )
         raise HTTPException(
             status_code=423,
             detail=(
@@ -545,6 +580,18 @@ async def say(
         ]
         if missed:
             speakers = ", ".join(dict.fromkeys(m["from"] for m in missed))
+            # Keep the text that lost the race. It is the whole point of the
+            # record: what the agent was about to say, beside what actually
+            # landed instead.
+            await db.record_event(
+                bus["bus_id"], "collision", agent_id=name,
+                conversation_id=conversation_id,
+                detail={"beaten_by": [m["from"] for m in missed],
+                        "seen_seq": body.seen_seq,
+                        "text": body.text,
+                        "landed": [{"from": m["from"], "seq": m["seq"],
+                                    "text": m["text"]} for m in missed]},
+            )
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -594,6 +641,10 @@ async def say(
             )
         except Exception:  # noqa: BLE001 - closing matters more than announcing it
             log.warning("closure notice failed for %s", conversation_id, exc_info=True)
+        await db.record_event(
+            bus["bus_id"], "closed", agent_id=name, conversation_id=conversation_id,
+            detail={"reason": exhausted, "when": "on_arrival", "text": body.text},
+        )
         raise HTTPException(
             status_code=423,
             detail=(
