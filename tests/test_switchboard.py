@@ -9,7 +9,7 @@ sys.path.insert(0, "/app")
 from app.db import (AVATAR_CHARACTERS, AVATAR_MINIMALIST, AVATAR_STYLES,
                     NAMING_AVATARS, Database, avatar_background_of,
                     avatar_style_of, chosen_background, new_avatar_seed,
-                    normalise_background,
+                    normalise_background, LIVENESS_RESOLUTION_S,
                     default_avatar_url, new_agent_key, new_bus_secret)
 from app.commands import resolve_style
 from app.egress import chunk_text
@@ -359,6 +359,40 @@ async def main():
 
     check("names are url-safe in the seed",
           " " not in default_avatar_url("two words", "human"))
+
+    print("\nliveness writes are throttled, not per-request")
+    bus_t = await db.create_bus(guild_id="g7", channel_id="c7", guild_name="T",
+                                channel_name="live", created_by="u7",
+                                secret=new_bus_secret())
+    tid = bus_t["bus_id"]
+    await db.register_agent(bus_id=tid, agent_id="poller", key=new_agent_key(),
+                            avatar_url="a")
+
+    async def last_seen():
+        return (await db.get_agent(tid, "poller"))["last_seen"]
+
+    db._touched.clear()
+    await db.touch_agent(tid, "poller")
+    first = await last_seen()
+    for _ in range(20):                      # a burst of polls
+        await db.touch_agent(tid, "poller")
+    check("A BURST OF POLLS IS ONE WRITE", await last_seen() == first)
+
+    # Pretend the throttle window has passed.
+    db._touched[(tid, "poller")] = time.time() - LIVENESS_RESOLUTION_S - 1
+    await db.touch_agent(tid, "poller")
+    check("it writes again once the window passes", await last_seen() > first)
+    check("the window is coarser than any poll but finer than every reader",
+          25.0 <= LIVENESS_RESOLUTION_S < 120.0, LIVENESS_RESOLUTION_S)
+    check("throttling is per agent",
+          (tid, "poller") in db._touched and len(db._touched) >= 1)
+
+    async with db._conn.execute("PRAGMA synchronous") as cur:
+        mode = (await cur.fetchone())[0]
+    check("SYNCHRONOUS IS NORMAL — no fsync per commit", mode == 1, mode)
+    async with db._conn.execute("PRAGMA journal_mode") as cur:
+        check("still WAL, so durability is degraded not abandoned",
+              (await cur.fetchone())[0].lower() == "wal")
 
     print("\nabandoned conversations get swept")
     bus_s = await db.create_bus(guild_id="g6", channel_id="c6", guild_name="S",

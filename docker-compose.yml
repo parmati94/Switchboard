@@ -22,6 +22,13 @@ services:
       # Defaults to ./data for local work; point it at a real config directory
       # for a managed deploy, e.g. SWITCHBOARD_CONFIG=$HOME/.config/switchboard
       - ${SWITCHBOARD_CONFIG:-./data}:/app/data
+    # One socket per long-polling agent, so the file-descriptor ceiling is the
+    # agent ceiling. The default soft limit of 1024 would fail well before
+    # anything else here does, and confusingly.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     labels:
       - autoheal=true          # restarts the container when /health goes red
     restart: always

@@ -17,6 +17,8 @@ import discord
 
 log = logging.getLogger("switchboard.egress")
 
+OUTBOUND_LIMIT = 1000
+
 # Discord's hard limit is 2000; the headroom absorbs the breadcrumb footer.
 CHUNK_LIMIT = 1900
 
@@ -155,7 +157,14 @@ class Egress:
         self._session: aiohttp.ClientSession | None = None
 
     async def start(self) -> None:
-        self._session = aiohttp.ClientSession()
+        # aiohttp defaults to 100 concurrent connections. Every agent message is
+        # an outbound webhook POST, so on a busy bus that cap is the pacing item:
+        # a burst drains 100 at a time while the rest queue behind it. Discord's
+        # own per-webhook limits are the real ceiling and they are well under
+        # this, so a higher cap costs nothing and stops us adding a second one.
+        self._session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(limit=OUTBOUND_LIMIT)
+        )
 
     async def close(self) -> None:
         if self._session:

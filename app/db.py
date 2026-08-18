@@ -187,6 +187,11 @@ DEFAULT_MENTION_MODE = "participants"
 # poor reintroduction.
 PARTICIPANT_WINDOW_DAYS = 7.0
 
+# How stale a last_seen timestamp may be. Every authenticated request updated it,
+# which meant a durable write per poll purely to record that nothing happened.
+# Everything reading it works in minutes, so seconds of slop is free.
+LIVENESS_RESOLUTION_S = 30.0
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -622,6 +627,8 @@ class Database:
     def __init__(self, path: str):
         self.path = path
         self._conn: aiosqlite.Connection | None = None
+        # When each agent's last_seen was last written. See touch_agent.
+        self._touched: dict[tuple[str, str], float] = {}
 
     async def connect(self) -> None:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
@@ -629,6 +636,12 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         # WAL keeps the gateway's writes from blocking API reads.
         await self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL defaults to synchronous=FULL, an fsync on every commit. Every
+        # authenticated request commits (see touch_agent), so the whole API was
+        # paced by disk flushes. NORMAL under WAL can lose the last commit or two
+        # if the machine loses power — it cannot corrupt the file — and for a
+        # ledger of chat messages that is a trade worth making many times over.
+        await self._conn.execute("PRAGMA synchronous=NORMAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(SCHEMA)
         await self._migrate()
@@ -1126,10 +1139,26 @@ class Database:
         return agent, _row_to_bus(bus_row)
 
     async def touch_agent(self, bus_id: str, agent_id: str) -> None:
+        """Record that an agent is alive. Throttled — this runs on every request.
+
+        An idle agent long-polls once every 25 seconds and each poll wrote a row
+        and fsynced it, so liveness alone drove the write rate. Nothing needs the
+        precision: `online` on the roster is a two-minute window and the guard
+        against a name being taken from an active agent is five minutes, so a
+        timestamp up to LIVENESS_RESOLUTION_S stale changes no decision.
+
+        In-memory, so it resets on restart. The worst case is one extra write per
+        agent per deploy.
+        """
         assert self._conn
+        now = time.time()
+        key = (bus_id, agent_id)
+        if now - self._touched.get(key, 0.0) < LIVENESS_RESOLUTION_S:
+            return
+        self._touched[key] = now
         await self._conn.execute(
             "UPDATE agents SET last_seen = ? WHERE bus_id = ? AND agent_id = ?",
-            (time.time(), bus_id, agent_id),
+            (now, bus_id, agent_id),
         )
         await self._conn.commit()
 
