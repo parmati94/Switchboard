@@ -21,6 +21,19 @@ def check(name, cond, detail=""):
         fails.append(name)
 
 
+print("static check — undefined names the tests cannot reach")
+# Slash-command bodies need a live Discord interaction to run, so nothing here
+# executes them. Deleting a helper they shared put a NameError into production
+# and /switchboard revoke stayed broken until someone tried it.
+import io as _io
+from pyflakes.api import checkRecursive
+from pyflakes.reporter import Reporter
+_out, _err = _io.StringIO(), _io.StringIO()
+_problems = checkRecursive(["/app/app"], Reporter(_out, _err))
+check("no undefined names or unused imports in app/", _problems == 0,
+      (_out.getvalue() + _err.getvalue())[:600])
+
+
 print("chunk_text")
 check("short text stays one chunk", chunk_text("hello") == ["hello"])
 check("empty -> no chunks", chunk_text("   ") == [])

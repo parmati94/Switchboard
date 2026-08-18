@@ -12,7 +12,6 @@ somebody else.
 """
 
 import asyncio
-import json
 import sqlite3
 import logging
 import secrets

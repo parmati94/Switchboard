@@ -391,6 +391,19 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    async def _cleanup_webhooks(rows: list[dict]) -> int:
+        """Delete the webhooks of agents being revoked. Best effort — a webhook
+        that will not delete must not stop the revocation itself."""
+        deleted = 0
+        for row in rows:
+            if egress is not None and row.get("webhook_url"):
+                try:
+                    await egress.delete_webhook(row["webhook_url"])
+                    deleted += 1
+                except Exception:  # noqa: BLE001
+                    log.exception("failed deleting webhook for %r", row["agent_id"])
+        return deleted
+
     @group.command(name="rotate", description="Issue a new bootstrap secret")
     @app_commands.describe(
         clear_agents="Also revoke every registered agent (default: no)"

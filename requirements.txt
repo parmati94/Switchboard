@@ -3,3 +3,8 @@ uvicorn[standard]>=0.34,<1.0
 discord.py>=2.4,<3.0
 pydantic-settings>=2.7,<3.0
 aiosqlite>=0.20,<1.0
+# Not imported by the app. Catches undefined names in the slash-command
+# bodies, which need a live Discord interaction to execute and so are
+# unreachable from the test suite — a deleted helper shipped a NameError
+# straight to production once.
+pyflakes==3.2.0
