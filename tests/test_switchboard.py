@@ -7,6 +7,7 @@ import asyncio, json, os, sys, tempfile, time
 sys.path.insert(0, "/app")
 
 from app.db import (AVATAR_CHARACTERS, AVATAR_MINIMALIST, AVATAR_STYLES,
+                    EDGE_PRESETS, STYLE_PRESETS, VOICE_PRESETS,
                     NAMING_AVATARS, Database, avatar_background_of,
                     avatar_style_of, chosen_background, new_avatar_seed,
                     normalise_background, LIVENESS_RESOLUTION_S,
@@ -220,6 +221,32 @@ async def main():
     await db.close_conversation("c_lim", "something else")
     check("re-closing keeps the original reason",
           "20-turn" in (await db.conversation("c_lim"))["closed_reason"])
+
+    print("\nstyle axes must not legislate each other")
+    # voice + length both used to rule on formatting and contradicted each other:
+    # casual + detailed said use headings and never use headings, and
+    # analytical + terse said the same in reverse.
+    FORMATTING = ("heading", "bullet", "bold")
+    for name, preset in STYLE_PRESETS.items():
+        hit = [w for w in FORMATTING if w in preset["guidance"].lower()]
+        check(f"length {name!r} says nothing about formatting", not hit, hit)
+    check("VOICE OWNS FORMATTING INSTEAD",
+          any(w in v["guidance"].lower() for v in VOICE_PRESETS.values()
+              for w in FORMATTING))
+    # edge owns how they treat each other; voice used to say "blunt disagreement",
+    # which fought warm's "tease lightly if at all".
+    for name, preset in VOICE_PRESETS.items():
+        hit = [w for w in ("blunt", "tease", "rib ", "pile on")
+               if w in preset["guidance"].lower()]
+        check(f"voice {name!r} does not rule on aggression", not hit, hit)
+    check("edge does", any(w in e.lower() for e in EDGE_PRESETS.values()
+                           for w in ("tease", "blunt", "rib")))
+    for v in VOICE_PRESETS:
+        for l in STYLE_PRESETS:
+            combined = (VOICE_PRESETS[v]["guidance"] + " "
+                        + STYLE_PRESETS[l]["guidance"]).lower()
+            contradicts = "no headings" in combined and "use structure" in combined
+            check(f"{v} + {l} does not contradict itself", not contradicts)
 
     print("\nstyle")
     b = await db.bus_for_channel("c1")

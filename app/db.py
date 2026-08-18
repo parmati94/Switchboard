@@ -100,8 +100,8 @@ VOICE_PRESETS = {
     "casual": {
         "guidance": (
             "Talk like a person in a group chat, not an analyst. Contractions, "
-            "opinions, jokes, blunt disagreement. No headings, no bullet lists, no "
-            "hedging, no 'the distinction is structural rather than X'. Say the thing. "
+            "opinions, jokes. No headings, no bullet lists, no bold, no hedging, no "
+            "'the distinction is structural rather than X'. Say the thing. "
             "Reacting to what someone said with a short agreement or a joke is fine "
             "here — the back-and-forth is the point, not noise, and you do not have to be "
             "adding new information to be worth reading."
@@ -114,9 +114,9 @@ VOICE_PRESETS = {
     },
     "neutral": {
         "guidance": (
-            "Write like a person talking, not like a report. Plain, direct, no "
-            "headings, no bullet lists unless genuinely listing things. Have opinions "
-            "and say them. Avoid consultant register and avoid hedging."
+            "Write like a person talking, not like a report. Plain and direct. No "
+            "headings; a bullet list only when you are genuinely listing things. Have "
+            "opinions and say them. Avoid consultant register and avoid hedging."
         ),
         "naming_hint": "Pick a short descriptive name.",
         "relaxes_etiquette": False,
@@ -124,7 +124,8 @@ VOICE_PRESETS = {
     "analytical": {
         "guidance": (
             "Precision over warmth. Cite evidence, distinguish claims from opinion, "
-            "structure the answer where structure aids the reader."
+            "and use structure — headings, lists — where it genuinely aids the reader "
+            "rather than by reflex."
         ),
         "naming_hint": "Pick a name describing your particular role or angle.",
         "relaxes_etiquette": False,
@@ -132,29 +133,32 @@ VOICE_PRESETS = {
 }
 DEFAULT_VOICE = "neutral"
 
-# How long. `guidance` is advisory and shapes shape; `max_chars` is a hard cap
-# that catches drift. Guidance alone gets ignored under pressure; a cap alone can
-# only truncate, never make writing read better.
+# How much, and only how much. `max_chars` is a hard cap that catches drift;
+# guidance alone gets ignored under pressure, and a cap alone can only truncate,
+# never make writing read better.
+#
+# Formatting deliberately lives on VOICE, not here. Both axes used to legislate
+# it and they contradicted each other: casual + detailed told an agent to use
+# headings and to never use headings, and analytical + terse did the same in
+# reverse. Whether a reply has headings is a question of register — a group chat
+# has none, a report does — so voice owns it and length says nothing about it.
 STYLE_PRESETS = {
     "terse": {
         "max_chars": 360,
-        "guidance": (
-            "Reply in one to three sentences. Conversational, like chat. No headings, "
-            "no bullet lists, no bold. Make one point and stop."
-        ),
+        "guidance": "Reply in one to three sentences. Make one point and stop.",
     },
     "normal": {
         "max_chars": 1100,
         "guidance": (
-            "Reply in a short paragraph or two of prose. Make one point well rather "
-            "than several thinly. Avoid headings and long bullet lists."
+            "Reply in a short paragraph or two. Make one point well rather than "
+            "several thinly."
         ),
     },
     "detailed": {
         "max_chars": 1900,
         "guidance": (
-            "Longer structured answers are welcome. Use headings and lists where they "
-            "genuinely aid the reader rather than by reflex."
+            "Longer answers are welcome. Develop the point properly rather than "
+            "padding it."
         ),
     },
 }
