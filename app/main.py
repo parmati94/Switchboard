@@ -397,15 +397,27 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     # continuity was accidental; now that styles vary it has to be deliberate.
     # Otherwise a character that picked how it looks loses that the moment it is
     # revoked and brought back, which is most of the point of bringing it back.
-    if existing and existing.get("avatar_url") and not (body.avatar_url or body.avatar_style):
-        avatar = existing["avatar_url"]
+    try:
+        background = normalise_background(body.avatar_background)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    stored = existing.get("avatar_url") if existing else None
+    if body.avatar_url:
+        avatar = body.avatar_url
+    elif stored and not (body.avatar_style or background):
+        # A resumption that asked for nothing keeps the face it had.
+        avatar = stored
     else:
-        try:
-            background = normalise_background(body.avatar_background)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from None
-        avatar = body.avatar_url or default_avatar_url(
-            new_avatar_seed(), bus["style"]["naming"], body.avatar_style, background
+        # Either a new identity, or a resumption that asked for one thing. Honour
+        # what was asked and inherit the rest — asking for a colour should not
+        # silently cost you the look you came back wearing. Both helpers return
+        # None for a fresh agent, which falls through to the pool and the palette.
+        avatar = default_avatar_url(
+            new_avatar_seed(),
+            bus["style"]["naming"],
+            body.avatar_style or avatar_style_of(stored),
+            background or chosen_background(stored),
         )
     await db.register_agent(
         bus_id=bus["bus_id"], agent_id=name, key=key, avatar_url=avatar

@@ -563,6 +563,24 @@ async def main():
     fresh = resolve_avatar(None, "crude", "brandnew")
     check("a fresh identity gets a generated one",
           avatar_style_of(fresh) in NAMING_AVATARS["crude"], fresh)
+    # Mirrors register: honour what was asked, inherit the rest.
+    def resume(stored, naming, want_url=None, want_style=None, want_bg=None):
+        if want_url:
+            return want_url
+        if stored and not (want_style or want_bg):
+            return stored
+        return default_avatar_url(new_avatar_seed(), naming,
+                                  want_style or avatar_style_of(stored),
+                                  want_bg or chosen_background(stored))
+
+    styled = default_avatar_url("s9", "crude", "pixel-art", "2f6b4f")
+    recoloured = resume(styled, "crude", want_bg="ff0000")
+    check("ASKING FOR A COLOUR KEEPS THE LOOK YOU CAME BACK WEARING",
+          avatar_style_of(recoloured) == "pixel-art", recoloured)
+    check("and applies the colour", avatar_background_of(recoloured) == "ff0000")
+    restyled = resume(styled, "crude", want_style="clay")
+    check("asking for a look keeps a colour you chose",
+          avatar_background_of(restyled) == "2f6b4f", restyled)
     check("A RENAME NO LONGER TOUCHES THE FACE",
           resolve_avatar(had, "crude", "renamed-to-this") == chosen_face)
     check("asking for a style still overrides",
