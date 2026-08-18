@@ -6,7 +6,8 @@ Run: docker run --rm -v $PWD/tests:/tests:ro parmati/switchboard:latest \
 import asyncio, json, os, sys, tempfile, time
 sys.path.insert(0, "/app")
 
-from app.db import (AVATAR_STYLES, NAMING_AVATARS, Database, avatar_style_of,
+from app.db import (AVATAR_CHARACTERS, AVATAR_MINIMALIST, AVATAR_STYLES,
+                    NAMING_AVATARS, Database, avatar_style_of,
                     default_avatar_url, new_agent_key, new_bus_secret)
 from app.commands import resolve_style
 from app.egress import chunk_text
@@ -301,6 +302,19 @@ async def main():
           default_avatar_url("marlow", "human") != default_avatar_url("marlow", "crude"))
     check("every pool is drawn from the allowlist",
           all(st in AVATAR_STYLES for pool in NAMING_AVATARS.values() for st in pool))
+    check("ONLY CHARACTERS ARE EVER ASSIGNED — a face beats a pattern at 40px",
+          all(st in AVATAR_CHARACTERS for pool in NAMING_AVATARS.values() for st in pool),
+          [st for pool in NAMING_AVATARS.values() for st in pool
+           if st not in AVATAR_CHARACTERS])
+    check("abstract styles stay choosable but unassigned",
+          all(st not in sum(NAMING_AVATARS.values(), ()) for st in AVATAR_MINIMALIST))
+    check("the neutral variants are reserved for the working room",
+          set(NAMING_AVATARS["descriptive"]) ==
+          {st for st in AVATAR_CHARACTERS if st.endswith("-neutral")},
+          NAMING_AVATARS["descriptive"])
+    check("a face minted under an older API version is still ours",
+          avatar_style_of("https://api.dicebear.com/9.x/fun-emoji/png?seed=lint")
+          == "fun-emoji")
 
     chosen = default_avatar_url("quill", "crude", "pixel-art")
     check("AN AGENT CAN CHOOSE ITS LOOK", avatar_style_of(chosen) == "pixel-art", chosen)

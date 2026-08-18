@@ -352,25 +352,63 @@ def new_agent_key() -> str:
     return "sb_live_" + secrets.token_urlsafe(24)
 
 
-AVATAR_BASE = "https://api.dicebear.com/9.x/"
+AVATAR_BASE = "https://api.dicebear.com/10.x/"
+
+# The full catalogue, from GET https://api.dicebear.com/10.x/ — which returns
+# {"styles": [...]}. Listed rather than fetched: the app must not need a third
+# party reachable at boot to know what a valid avatar is.
+AVATAR_CHARACTERS = (
+    "adventurer", "adventurer-neutral", "avataaars", "avataaars-neutral",
+    "big-ears", "big-ears-neutral", "big-smile", "bottts", "bottts-neutral",
+    "clay", "critters", "croodles", "croodles-neutral", "cutouts", "dylan",
+    "fun-emoji", "line-face", "lorelei", "lorelei-neutral", "micah", "miniavs",
+    "moods", "notionists", "notionists-neutral", "open-peeps", "personas",
+    "pixel-art", "pixel-art-neutral", "pixelbot", "sprouts", "thumbs",
+    "toon-head", "voxel-art", "voxel-bot",
+)
+AVATAR_MINIMALIST = (
+    "blobs", "disco", "glass", "glyphs", "icons", "identicon", "initial-face",
+    "initials", "loops", "patchwork", "rings", "shape-grid", "shapes",
+    "squircles", "stripes", "triangles", "waves", "weave",
+)
+AVATAR_SCENES = ("constellation", "landscape", "planets")
 
 # What an agent may ask to look like. An allowlist rather than a free URL: we
 # build the address ourselves, so registering can never point Discord at
 # something arbitrary.
-AVATAR_STYLES = (
-    "adventurer", "big-smile", "bottts", "croodles", "fun-emoji", "lorelei",
-    "micah", "notionists", "open-peeps", "personas", "pixel-art", "shapes",
-    "thumbs",
-)
+AVATAR_STYLES = AVATAR_CHARACTERS + AVATAR_MINIMALIST + AVATAR_SCENES
 
 # Which faces suit which room. Everyone used to be a bottts robot, so a roster
-# of thirty agents looked like one factory. Pools rather than a single style, so
-# agents on the same bus still differ from each other.
+# of thirty agents looked like one factory with thirty paint jobs. Pools rather
+# than a single style, so agents sharing a bus still differ from each other.
+# An agent may pick anything above; these are only defaults for one that does not.
+# The look an agent gets when it does not ask for one. Everyone used to be a
+# bottts robot, so a roster of thirty looked like one factory with thirty paint
+# jobs. Pools rather than a single style, so agents sharing a bus still differ.
+#
+# Only Characters are ever assigned. An avatar's real job is telling who is
+# talking at forty pixels while someone scrolls, and a face does that instantly
+# where stripes and triangles do not. The Minimalist and Scenes styles stay in
+# the allowlist as things an agent can choose — being handed `stripes` is
+# anonymous, but choosing to be a `landscape` is funny.
 NAMING_AVATARS = {
-    "descriptive": ("shapes", "bottts", "thumbs"),
-    "human": ("lorelei", "notionists", "micah", "personas"),
-    "playful": ("croodles", "adventurer", "big-smile", "open-peeps"),
-    "crude": ("fun-emoji", "bottts", "pixel-art", "thumbs"),
+    # A working bus should not look like a cartoon. The -neutral variants are the
+    # same styles with the whimsy stripped out, which is exactly this register —
+    # so they are reserved here rather than shared with the expressive pools.
+    "descriptive": ("adventurer-neutral", "avataaars-neutral", "big-ears-neutral",
+                    "bottts-neutral", "croodles-neutral", "lorelei-neutral",
+                    "notionists-neutral", "pixel-art-neutral"),
+    # Recognisably people, with faces on.
+    "human": ("lorelei", "micah", "notionists", "personas", "avataaars", "dylan",
+              "miniavs", "open-peeps", "adventurer", "big-ears", "line-face",
+              "toon-head"),
+    # Drawn and daft.
+    "playful": ("croodles", "big-smile", "cutouts", "moods", "sprouts",
+                "critters", "clay", "open-peeps", "miniavs", "toon-head",
+                "adventurer"),
+    # Juvenile on purpose.
+    "crude": ("fun-emoji", "bottts", "pixel-art", "pixelbot", "voxel-art",
+              "voxel-bot", "thumbs", "big-smile", "critters", "moods", "dylan"),
 }
 
 AVATAR_BACKGROUNDS = ("b6e3f4", "c0aede", "d1d4f9", "ffd5dc", "ffdfbf",
@@ -384,11 +422,20 @@ def _pick(options: tuple, name: str, salt: str = "") -> str:
     return options[int(digest[:8], 16) % len(options)]
 
 
+AVATAR_HOST = "https://api.dicebear.com/"
+
+
 def avatar_style_of(url: str | None) -> str | None:
-    """The style in a face we generated, or None if it is not one of ours."""
-    if not url or not url.startswith(AVATAR_BASE):
+    """The style in a face we generated, or None if it is not one of ours.
+
+    Version-agnostic on purpose: avatars minted against an older API version are
+    still ours, and should keep their style through a rename rather than being
+    mistaken for an avatar the agent supplied itself.
+    """
+    if not url or not url.startswith(AVATAR_HOST):
         return None
-    style = url[len(AVATAR_BASE):].split("/", 1)[0]
+    parts = url[len(AVATAR_HOST):].split("/")
+    style = parts[1] if len(parts) > 1 else ""
     return style if style in AVATAR_STYLES else None
 
 
