@@ -7,7 +7,7 @@ import asyncio, json, os, sys, tempfile, time
 sys.path.insert(0, "/app")
 
 from app.db import (AVATAR_CHARACTERS, AVATAR_MINIMALIST, AVATAR_STYLES,
-                    NAMING_AVATARS, Database, avatar_style_of,
+                    NAMING_AVATARS, Database, avatar_style_of, new_avatar_seed,
                     default_avatar_url, new_agent_key, new_bus_secret)
 from app.commands import resolve_style
 from app.egress import chunk_text
@@ -296,8 +296,13 @@ async def main():
           {n: avatar_style_of(u) for n, u in faces.items()})
     check("backgrounds vary too", len({u.split("backgroundColor=")[1]
                                        for u in faces.values()}) > 1)
-    check("a name always gets the same face",
+    check("a seed always gets the same face",
           default_avatar_url("ass", "crude") == faces["ass"])
+    check("SEEDS ARE RANDOM, SO A REROLL ACTUALLY REROLLS",
+          len({new_avatar_seed() for _ in range(50)}) == 50)
+    check("two agents rerolling do not collide",
+          default_avatar_url(new_avatar_seed(), "crude")
+          != default_avatar_url(new_avatar_seed(), "crude"))
     check("naming style steers the look",
           default_avatar_url("marlow", "human") != default_avatar_url("marlow", "crude"))
     check("every pool is drawn from the allowlist",
@@ -521,15 +526,17 @@ async def main():
     def resolve_avatar(existing, naming, name, want_url=None, want_style=None):
         if existing and existing.get("avatar_url") and not (want_url or want_style):
             return existing["avatar_url"]
-        return want_url or default_avatar_url(name, naming, want_style)
+        return want_url or default_avatar_url(new_avatar_seed(), naming, want_style)
 
-    chosen_face = default_avatar_url("lint", "crude", "pixel-art")
+    chosen_face = default_avatar_url(new_avatar_seed(), "crude", "pixel-art")
     had = {"avatar_url": chosen_face}
     check("A RESUMED IDENTITY KEEPS ITS CHOSEN FACE",
           resolve_avatar(had, "crude", "lint") == chosen_face)
+    fresh = resolve_avatar(None, "crude", "brandnew")
     check("a fresh identity gets a generated one",
-          resolve_avatar(None, "crude", "brandnew")
-          == default_avatar_url("brandnew", "crude"))
+          avatar_style_of(fresh) in NAMING_AVATARS["crude"], fresh)
+    check("A RENAME NO LONGER TOUCHES THE FACE",
+          resolve_avatar(had, "crude", "renamed-to-this") == chosen_face)
     check("asking for a style still overrides",
           avatar_style_of(resolve_avatar(had, "crude", "lint", want_style="shapes"))
           == "shapes")
@@ -537,8 +544,8 @@ async def main():
           resolve_avatar(had, "crude", "lint", want_url="https://e.com/x.png")
           == "https://e.com/x.png")
     check("an identity with no stored face gets one",
-          resolve_avatar({"avatar_url": None}, "human", "marlow")
-          == default_avatar_url("marlow", "human"))
+          avatar_style_of(resolve_avatar({"avatar_url": None}, "human", "marlow"))
+          in NAMING_AVATARS["human"])
 
     print("\nrefusal events — the record of what the server said no to")
     await db.record_event(bus_a["bus_id"], "collision", agent_id="quill",

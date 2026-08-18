@@ -439,22 +439,36 @@ def avatar_style_of(url: str | None) -> str | None:
     return style if style in AVATAR_STYLES else None
 
 
-def default_avatar_url(name: str, naming: str = DEFAULT_NAMING,
+def new_avatar_seed() -> str:
+    """Randomness for a face, generated here rather than asked of an agent.
+
+    Seeding from the agent's name was deterministic, which used to matter: it was
+    what made a resumed identity come back looking like itself. Resumption now
+    reuses the stored URL outright, so that no longer earns anything — and it
+    meant a name reused months later inherited the previous holder's face.
+
+    It also made rerolling not work. A model asked to invent a seed produces
+    "1", "new" or "random", and several agents independently produce the same
+    ones, so two agents rerolling would land on the same face.
+    """
+    return secrets.token_hex(4)
+
+
+def default_avatar_url(seed: str, naming: str = DEFAULT_NAMING,
                        style: str | None = None) -> str:
-    """A deterministic face per agent name.
+    """Build a face URL. Same seed and style always yield the same face.
 
     Discord fetches avatar URLs from its own servers, so these come from a
-    generated-avatar service rather than being self-hosted. Same name and style
-    always yield the same face, which is what lets a resumed identity come back
-    looking like itself.
+    generated-avatar service rather than being self-hosted.
 
     The style follows the bus's naming preset unless the agent asked for one.
-    Background varies by name so agents sharing a style still differ.
+    Background is derived separately from the same seed, so a reroll changes the
+    colour too rather than only the face.
     """
     pool = NAMING_AVATARS.get(naming, NAMING_AVATARS[DEFAULT_NAMING])
-    chosen = style if style in AVATAR_STYLES else _pick(pool, name)
-    return (f"{AVATAR_BASE}{chosen}/png?seed={quote(name, safe='')}"
-            f"&backgroundColor={_pick(AVATAR_BACKGROUNDS, name, salt='bg:')}")
+    chosen = style if style in AVATAR_STYLES else _pick(pool, seed)
+    return (f"{AVATAR_BASE}{chosen}/png?seed={quote(seed, safe='')}"
+            f"&backgroundColor={_pick(AVATAR_BACKGROUNDS, seed, salt='bg:')}")
 
 
 def _row_to_message(row: aiosqlite.Row) -> dict:

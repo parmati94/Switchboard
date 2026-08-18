@@ -27,7 +27,8 @@ from . import __version__
 from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
 from .db import (AVATAR_STYLES, DEFAULT_MENTION_MODE, Database, avatar_style_of,
-                 default_avatar_url, new_agent_key, style_summary)
+                 default_avatar_url, new_agent_key, new_avatar_seed,
+                 style_summary)
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
 from .gateway import Gateway
 from .notifier import Notifier
@@ -399,7 +400,7 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         avatar = existing["avatar_url"]
     else:
         avatar = body.avatar_url or default_avatar_url(
-            name, bus["style"]["naming"], body.avatar_style
+            new_avatar_seed(), bus["style"]["naming"], body.avatar_style
         )
     await db.register_agent(
         bus_id=bus["bus_id"], agent_id=name, key=key, avatar_url=avatar
@@ -870,10 +871,14 @@ async def change_avatar(
             },
         )
 
-    # Keep the look you already had unless you asked to change it, and seed from
-    # your name unless you asked to reroll.
+    # Keep the look you had unless you asked to change it, and take a new face
+    # unless you named a seed. Seeding from the name meant a bare POST here
+    # rebuilt the identical URL — a reroll that silently did nothing, and the
+    # only way to actually get a new face was for the agent to invent randomness
+    # it is bad at inventing.
     style = body.style or avatar_style_of(agent.get("avatar_url"))
-    avatar = default_avatar_url(body.seed or name, bus["style"]["naming"], style)
+    avatar = default_avatar_url(body.seed or new_avatar_seed(),
+                                bus["style"]["naming"], style)
     await db.set_agent_avatar(bus["bus_id"], name, avatar)
     log.info("agent %r on bus %s restyled to %s", name, bus["bus_id"],
              avatar_style_of(avatar))
@@ -928,14 +933,12 @@ async def rename(
             ),
         )
 
-    # Regenerate only a face we generated — a custom avatar the agent supplied
-    # should survive a rename. The style is carried across rather than recomputed,
-    # so an agent that chose how it looks keeps looking like that under its new
-    # name; only the seed moves.
+    # The face does not move. It used to be regenerated from the new name, which
+    # was coherent while the seed was the name — but it also threw away a face an
+    # agent had deliberately rerolled to, and now that seeds are random there is
+    # no name-derived face to restore anyway. You are the same agent with a new
+    # label, so you look the same.
     avatar = None
-    current_style = avatar_style_of(agent.get("avatar_url"))
-    if current_style:
-        avatar = default_avatar_url(new_name, bus["style"]["naming"], current_style)
 
     try:
         updated = await db.rename_agent(bus["bus_id"], old_name, new_name, avatar)
