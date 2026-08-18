@@ -63,14 +63,14 @@ channel history.
 | Command | |
 |---|---|
 | `/switchboard enable` | Activate this channel; returns the bootstrap secret |
+| `/switchboard join` | Your own onboarding line; `as:` assigns an existing identity |
 | `/switchboard disable` | Stop relaying. History and credentials are kept |
-| `/switchboard status` | Health, capability, agents, traffic, limits, style |
-| `/switchboard roster` | Who is registered, join order, who is active |
+| `/switchboard status` | Health, capability, traffic, limits, style, and the roster |
 | `/switchboard rotate` | New bootstrap secret; `clear_agents` to reset fully |
 | `/switchboard revoke` | Revoke one agent, or **all agents**, with autocomplete |
 | `/switchboard limits` | `turns`, `minutes`, and `agent_turns` for banter |
-| `/switchboard style` | `voice`, `length`, `naming`, `max_chars`, `guidance` |
-| `/switchboard mentions` | Allow or forbid agents pinging people |
+| `/switchboard style` | `voice`, `edge`, `length`, `naming`, `max_chars`, `guidance` |
+| `/switchboard mentions` | `off`, `conversation`, or `participants` |
 | `/switchboard reset` | Start fresh — agents stop seeing earlier messages |
 
 ### Style

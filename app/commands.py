@@ -365,18 +365,30 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             inline=True,
         )
 
+        stale = sum(1 for a in agents if not a["online"])
         if agents:
+            now = time.time()
+
+            def _seen(a) -> str:
+                if not a["last_seen"]:
+                    return "never seen"
+                age = now - a["last_seen"]
+                return f"{age:.0f}s ago" if age < 90 else f"{age / 60:.0f}m ago"
+
             embed.add_field(
                 name="Roster",
                 value="\n".join(
-                    f"{'🟢' if a['online'] else '⚪'} `{a['position']}` **{a['id']}**"
-                    + ("" if a["own_webhook"] else "  -# shared webhook")
-                    for a in agents[:10]
-                ) + (f"\n-# …and {len(agents) - 10} more" if len(agents) > 10 else ""),
+                    f"{'🟢' if a['online'] else '⚪'} `{a['position']}` **{a['id']}** · "
+                    f"{_seen(a)}" + ("" if a["own_webhook"] else " · shared webhook")
+                    for a in agents[:12]
+                ) + (f"\n-# …and {len(agents) - 12} more" if len(agents) > 12 else ""),
                 inline=False,
             )
 
-        embed.set_footer(text="🟢 seen in the last 2 minutes")
+        embed.set_footer(
+            text="🟢 seen in the last 2 minutes · position is join order"
+            + (f" · {stale} look gone — revoke to clear" if stale else "")
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @group.command(name="rotate", description="Issue a new bootstrap secret")
@@ -420,60 +432,6 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         log.info("bus %s secret rotated (clear_agents=%s)", bus["bus_id"], clear_agents)
 
-    @group.command(name="roster", description="Show agents registered on this bus")
-    async def roster(interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        bus = await db.bus_for_channel(str(interaction.channel_id))
-        if not bus:
-            await interaction.followup.send(_no_bus_message(), ephemeral=True)
-            return
-
-        agents = await db.roster(bus["bus_id"])
-        if not agents:
-            await interaction.followup.send(
-                f"No agents registered on `{bus['bus_id']}` yet. Give one the bootstrap "
-                "secret from `/switchboard enable` and it will onboard itself.",
-                ephemeral=True,
-            )
-            return
-
-        now = time.time()
-        stale = sum(1 for a in agents if not a["online"])
-        embed = discord.Embed(
-            title=f"Agents on #{bus['channel_name']}",
-            description=f"`{bus['bus_id']}` · **{len(agents)}** registered, "
-                        f"{len(agents) - stale} active",
-            colour=COLOUR_GREEN if not stale else COLOUR_BRASS,
-        )
-        for a in agents[:24]:
-            if a["last_seen"]:
-                age = now - a["last_seen"]
-                seen = f"{age:.0f}s ago" if age < 90 else f"{age / 60:.0f}m ago"
-            else:
-                seen = "never"
-            embed.add_field(
-                name=f"{'🟢' if a['online'] else '⚪'} {a['position']}. {a['id']}",
-                value=f"last seen {seen}\n"
-                      + ("own webhook" if a["own_webhook"] else "shared webhook"),
-                inline=True,
-            )
-        embed.set_footer(
-            text="🟢 seen in the last 2 minutes · position is join order"
-            + (f" · {stale} look gone — revoke → all agents to clear" if stale else "")
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    async def _cleanup_webhooks(rows: list[dict]) -> int:
-        deleted = 0
-        for row in rows:
-            if egress is not None and row.get("webhook_url"):
-                try:
-                    await egress.delete_webhook(row["webhook_url"])
-                    deleted += 1
-                except Exception:  # noqa: BLE001
-                    log.exception("failed deleting webhook for %r", row["agent_id"])
-        return deleted
-
     @group.command(name="revoke", description="Revoke one agent, or clear them all")
     @app_commands.describe(agent="Pick an agent, or 'all agents' to clear the roster")
     async def revoke(interaction: discord.Interaction, agent: str) -> None:
@@ -504,7 +462,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         if not revoked:
             await interaction.followup.send(
                 f"No active agent named `{agent}` on this bus. "
-                "Check `/switchboard roster` for exact names.",
+                "Check `/switchboard status` for exact names.",
                 ephemeral=True,
             )
             return
