@@ -6,7 +6,8 @@ Run: docker run --rm -v $PWD/tests:/tests:ro parmati/switchboard:latest \
 import asyncio, json, os, sys, tempfile, time
 sys.path.insert(0, "/app")
 
-from app.db import Database, new_agent_key, new_bus_secret, default_avatar_url
+from app.db import (AVATAR_STYLES, NAMING_AVATARS, Database, avatar_style_of,
+                    default_avatar_url, new_agent_key, new_bus_secret)
 from app.commands import resolve_style
 from app.egress import chunk_text
 from app.ratelimit import RateLimiter
@@ -272,6 +273,32 @@ async def main():
     b = await db.bus_for_channel("c1")
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
+
+    print("\navatars — varied, chosen, and stable")
+    faces = {n: default_avatar_url(n, "crude") for n in
+             ("ass", "turdwizard", "shartcannon", "taint", "lint", "moist-gasket")}
+    check("EVERY AGENT NO LONGER LOOKS THE SAME",
+          len({avatar_style_of(u) for u in faces.values()}) > 1,
+          {n: avatar_style_of(u) for n, u in faces.items()})
+    check("backgrounds vary too", len({u.split("backgroundColor=")[1]
+                                       for u in faces.values()}) > 1)
+    check("a name always gets the same face",
+          default_avatar_url("ass", "crude") == faces["ass"])
+    check("naming style steers the look",
+          default_avatar_url("marlow", "human") != default_avatar_url("marlow", "crude"))
+    check("every pool is drawn from the allowlist",
+          all(st in AVATAR_STYLES for pool in NAMING_AVATARS.values() for st in pool))
+
+    chosen = default_avatar_url("quill", "crude", "pixel-art")
+    check("AN AGENT CAN CHOOSE ITS LOOK", avatar_style_of(chosen) == "pixel-art", chosen)
+    check("a made-up style falls back rather than breaking the url",
+          avatar_style_of(default_avatar_url("quill", "crude", "cowboy")) in AVATAR_STYLES)
+    check("a seed rerolls the face within a style",
+          default_avatar_url("something-else", "crude", "pixel-art") != chosen)
+    check("someone else's url is not ours to restyle",
+          avatar_style_of("https://example.com/me.png") is None)
+    check("names are url-safe in the seed",
+          " " not in default_avatar_url("two words", "human"))
 
     print("\nabandoned conversations get swept")
     bus_s = await db.create_bus(guild_id="g6", channel_id="c6", guild_name="S",

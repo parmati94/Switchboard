@@ -352,14 +352,62 @@ def new_agent_key() -> str:
     return "sb_live_" + secrets.token_urlsafe(24)
 
 
-def default_avatar_url(name: str) -> str:
+AVATAR_BASE = "https://api.dicebear.com/9.x/"
+
+# What an agent may ask to look like. An allowlist rather than a free URL: we
+# build the address ourselves, so registering can never point Discord at
+# something arbitrary.
+AVATAR_STYLES = (
+    "adventurer", "big-smile", "bottts", "croodles", "fun-emoji", "lorelei",
+    "micah", "notionists", "open-peeps", "personas", "pixel-art", "shapes",
+    "thumbs",
+)
+
+# Which faces suit which room. Everyone used to be a bottts robot, so a roster
+# of thirty agents looked like one factory. Pools rather than a single style, so
+# agents on the same bus still differ from each other.
+NAMING_AVATARS = {
+    "descriptive": ("shapes", "bottts", "thumbs"),
+    "human": ("lorelei", "notionists", "micah", "personas"),
+    "playful": ("croodles", "adventurer", "big-smile", "open-peeps"),
+    "crude": ("fun-emoji", "bottts", "pixel-art", "thumbs"),
+}
+
+AVATAR_BACKGROUNDS = ("b6e3f4", "c0aede", "d1d4f9", "ffd5dc", "ffdfbf",
+                      "c8e6c9", "ffe0b2", "e1bee7", "f8bbd0", "b2dfdb")
+
+
+def _pick(options: tuple, name: str, salt: str = "") -> str:
+    """Stable choice from a name. sha256 rather than hash(), which is salted per
+    process and would hand an agent a different face after every restart."""
+    digest = hashlib.sha256((salt + name).encode()).hexdigest()
+    return options[int(digest[:8], 16) % len(options)]
+
+
+def avatar_style_of(url: str | None) -> str | None:
+    """The style in a face we generated, or None if it is not one of ours."""
+    if not url or not url.startswith(AVATAR_BASE):
+        return None
+    style = url[len(AVATAR_BASE):].split("/", 1)[0]
+    return style if style in AVATAR_STYLES else None
+
+
+def default_avatar_url(name: str, naming: str = DEFAULT_NAMING,
+                       style: str | None = None) -> str:
     """A deterministic face per agent name.
 
-    Discord fetches avatar URLs from its own servers, so Switchboard cannot serve
-    these while PUBLIC_URL is a private address — hence a generated-avatar
-    service rather than self-hosting. Same name always yields the same face.
+    Discord fetches avatar URLs from its own servers, so these come from a
+    generated-avatar service rather than being self-hosted. Same name and style
+    always yield the same face, which is what lets a resumed identity come back
+    looking like itself.
+
+    The style follows the bus's naming preset unless the agent asked for one.
+    Background varies by name so agents sharing a style still differ.
     """
-    return f"https://api.dicebear.com/9.x/bottts/png?seed={quote(name, safe='')}"
+    pool = NAMING_AVATARS.get(naming, NAMING_AVATARS[DEFAULT_NAMING])
+    chosen = style if style in AVATAR_STYLES else _pick(pool, name)
+    return (f"{AVATAR_BASE}{chosen}/png?seed={quote(name, safe='')}"
+            f"&backgroundColor={_pick(AVATAR_BACKGROUNDS, name, salt='bg:')}")
 
 
 def _row_to_message(row: aiosqlite.Row) -> dict:
@@ -1373,6 +1421,14 @@ class Database:
             }
             for r in rows
         ]
+
+    async def set_agent_avatar(self, bus_id: str, agent_id: str, avatar_url: str) -> None:
+        assert self._conn
+        await self._conn.execute(
+            "UPDATE agents SET avatar_url = ? WHERE bus_id = ? AND agent_id = ?",
+            (avatar_url, bus_id, agent_id),
+        )
+        await self._conn.commit()
 
     async def sweep_stale_conversations(self) -> int:
         """Close exchanges that ran past their bus's time limit. Returns how many.

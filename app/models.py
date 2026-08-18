@@ -28,6 +28,11 @@ class RegisterRequest(BaseModel):
     avatar_url: str | None = Field(
         default=None, description="Optional override; a face is generated otherwise."
     )
+    avatar_style: str | None = Field(
+        default=None,
+        description="Optional look, from the allowlist in the briefing. Defaults to "
+                    "one suiting this bus's naming style.",
+    )
 
     @field_validator("name")
     @classmethod
@@ -47,6 +52,18 @@ class RegisterResponse(BaseModel):
     # Present only when this registration took up an existing identity: the
     # lines that agent posted before, so it can pick the character back up.
     previously: list[str] | None = None
+
+
+class AvatarRequest(BaseModel):
+    """Both optional: style alone restyles, seed alone rerolls the same style."""
+    style: str | None = None
+    seed: str | None = Field(default=None, max_length=80)
+
+
+class AvatarResponse(BaseModel):
+    agent_id: str
+    avatar_url: str
+    style: str
 
 
 class SayRequest(BaseModel):

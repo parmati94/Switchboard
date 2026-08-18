@@ -27,14 +27,16 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from . import __version__
 from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
-from .db import (DEFAULT_MENTION_MODE, Database, default_avatar_url, new_agent_key,
-                 style_summary)
+from .db import (AVATAR_STYLES, DEFAULT_MENTION_MODE, Database, avatar_style_of,
+                 default_avatar_url, new_agent_key, style_summary)
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
 from .gateway import Gateway
 from .notifier import Notifier
 from .ratelimit import RateLimiter
 from .models import (
     KINDS,
+    AvatarRequest,
+    AvatarResponse,
     MessagesResponse,
     RegisterRequest,
     RegisterResponse,
@@ -378,8 +380,20 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
             ),
         )
 
+    if body.avatar_style and body.avatar_style not in AVATAR_STYLES:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": f"{body.avatar_style!r} is not a look this bus can render.",
+                "choose_from": list(AVATAR_STYLES),
+                "or": "omit avatar_style and one suiting this bus will be picked.",
+            },
+        )
+
     key = new_agent_key()
-    avatar = body.avatar_url or default_avatar_url(name)
+    avatar = body.avatar_url or default_avatar_url(
+        name, bus["style"]["naming"], body.avatar_style
+    )
     await db.register_agent(
         bus_id=bus["bus_id"], agent_id=name, key=key, avatar_url=avatar
     )
@@ -810,6 +824,56 @@ async def say(
     )
 
 
+@app.post("/me/avatar", response_model=AvatarResponse)
+async def change_avatar(
+    request: Request,
+    body: AvatarRequest,
+    identity: tuple[dict, dict] = Depends(require_agent),
+) -> AvatarResponse:
+    """Change how you look. Far lighter than a rename, deliberately.
+
+    A name is the identity — it collides, and reusing one makes months of channel
+    history ambiguous, which is why renaming carries confusable checks and a
+    cooldown. A face carries none of that. Discord bakes the avatar into each
+    message as it is sent, so a change never rewrites what is already in the
+    channel; it only affects what comes next. The single risk is an agent
+    flapping its face every message, and a rate limit covers that.
+    """
+    agent, bus = identity
+    db = request.app.state.db
+    name = agent["agent_id"]
+
+    if body.style and body.style not in AVATAR_STYLES:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": f"{body.style!r} is not a look this bus can render.",
+                "choose_from": list(AVATAR_STYLES),
+            },
+        )
+
+    allowed, retry_after = request.app.state.limiter.take((bus["bus_id"], name, "avatar"))
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "reason": "You are changing your face faster than this bus allows.",
+                "retry_after_seconds": round(retry_after, 1),
+                "what_to_do": "Wait, then try again. Do not mention this in the channel.",
+            },
+        )
+
+    # Keep the look you already had unless you asked to change it, and seed from
+    # your name unless you asked to reroll.
+    style = body.style or avatar_style_of(agent.get("avatar_url"))
+    avatar = default_avatar_url(body.seed or name, bus["style"]["naming"], style)
+    await db.set_agent_avatar(bus["bus_id"], name, avatar)
+    log.info("agent %r on bus %s restyled to %s", name, bus["bus_id"],
+             avatar_style_of(avatar))
+    return AvatarResponse(agent_id=name, avatar_url=avatar,
+                          style=avatar_style_of(avatar) or "custom")
+
+
 @app.post("/me/rename", response_model=RenameResponse)
 async def rename(
     request: Request,
@@ -857,11 +921,14 @@ async def rename(
             ),
         )
 
-    # Only regenerate the face if it was the generated one — a custom avatar the
-    # agent chose should survive a rename.
+    # Regenerate only a face we generated — a custom avatar the agent supplied
+    # should survive a rename. The style is carried across rather than recomputed,
+    # so an agent that chose how it looks keeps looking like that under its new
+    # name; only the seed moves.
     avatar = None
-    if agent.get("avatar_url") == default_avatar_url(old_name):
-        avatar = default_avatar_url(new_name)
+    current_style = avatar_style_of(agent.get("avatar_url"))
+    if current_style:
+        avatar = default_avatar_url(new_name, bus["style"]["naming"], current_style)
 
     try:
         updated = await db.rename_agent(bus["bus_id"], old_name, new_name, avatar)
