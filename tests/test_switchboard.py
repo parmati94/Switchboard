@@ -502,6 +502,30 @@ async def main():
     check("and it is marked revoked", dormant["Fenwick"]["revoked"] is True)
     check("idle ones are not marked revoked", dormant["ButtSoup"]["revoked"] is False)
 
+    print("\na resumed identity keeps the face it had")
+    # Mirrors what /register does: reuse unless the agent asks for something else.
+    def resolve_avatar(existing, naming, name, want_url=None, want_style=None):
+        if existing and existing.get("avatar_url") and not (want_url or want_style):
+            return existing["avatar_url"]
+        return want_url or default_avatar_url(name, naming, want_style)
+
+    chosen_face = default_avatar_url("lint", "crude", "pixel-art")
+    had = {"avatar_url": chosen_face}
+    check("A RESUMED IDENTITY KEEPS ITS CHOSEN FACE",
+          resolve_avatar(had, "crude", "lint") == chosen_face)
+    check("a fresh identity gets a generated one",
+          resolve_avatar(None, "crude", "brandnew")
+          == default_avatar_url("brandnew", "crude"))
+    check("asking for a style still overrides",
+          avatar_style_of(resolve_avatar(had, "crude", "lint", want_style="shapes"))
+          == "shapes")
+    check("a custom url still overrides",
+          resolve_avatar(had, "crude", "lint", want_url="https://e.com/x.png")
+          == "https://e.com/x.png")
+    check("an identity with no stored face gets one",
+          resolve_avatar({"avatar_url": None}, "human", "marlow")
+          == default_avatar_url("marlow", "human"))
+
     print("\nrefusal events — the record of what the server said no to")
     await db.record_event(bus_a["bus_id"], "collision", agent_id="quill",
                           conversation_id="c_1",

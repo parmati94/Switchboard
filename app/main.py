@@ -390,9 +390,17 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         )
 
     key = new_agent_key()
-    avatar = body.avatar_url or default_avatar_url(
-        name, bus["style"]["naming"], body.avatar_style
-    )
+    # Resuming an identity keeps its face. The old generator was deterministic
+    # from the name alone, so recomputing happened to produce the same URL and
+    # continuity was accidental; now that styles vary it has to be deliberate.
+    # Otherwise a character that picked how it looks loses that the moment it is
+    # revoked and brought back, which is most of the point of bringing it back.
+    if existing and existing.get("avatar_url") and not (body.avatar_url or body.avatar_style):
+        avatar = existing["avatar_url"]
+    else:
+        avatar = body.avatar_url or default_avatar_url(
+            name, bus["style"]["naming"], body.avatar_style
+        )
     await db.register_agent(
         bus_id=bus["bus_id"], agent_id=name, key=key, avatar_url=avatar
     )
