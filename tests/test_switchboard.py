@@ -1,7 +1,11 @@
 """Exercise everything that doesn't need a live Discord connection.
 
-Run: docker run --rm -v $PWD/tests:/tests:ro parmati/switchboard:latest \
-         python /tests/test_switchboard.py
+Run: docker run --rm -e DISCORD_BOT_TOKEN=test -v $PWD/tests:/tests:ro \
+         parmati/switchboard:latest python /tests/test_switchboard.py
+
+The dummy token is what lets this import app.main at all — Settings is built at
+import time and the token is required, so without it every module that reaches
+config is untestable. Nothing here connects to Discord.
 """
 import asyncio, json, os, sys, tempfile, time
 sys.path.insert(0, "/app")
@@ -36,6 +40,31 @@ _out, _err = _io.StringIO(), _io.StringIO()
 _problems = checkRecursive(["/app/app"], Reporter(_out, _err))
 check("no undefined names or unused imports in app/", _problems == 0,
       (_out.getvalue() + _err.getvalue())[:600])
+
+
+print("log levels")
+import logging as _logging
+from app.main import apply_log_levels, QUIET_BY_DEFAULT
+from app.config import settings as _settings
+
+_before = _settings.log_levels
+_settings.log_levels = "switchboard.gateway:debug, discord:warning, bogus:nonsense, oops"
+apply_log_levels()
+check("a named logger is turned up",
+      _logging.getLogger("switchboard.gateway").level == _logging.DEBUG)
+check("and another turned down",
+      _logging.getLogger("discord").level == _logging.WARNING)
+check("THE ACCESS LOG IS QUIET BY DEFAULT",
+      _logging.getLogger("uvicorn.access").level == _logging.WARNING)
+check("a bad level is ignored, not fatal",
+      _logging.getLogger("bogus").level == _logging.NOTSET)
+check("a malformed entry is ignored, not fatal",
+      _logging.getLogger("oops").level == _logging.NOTSET)
+_settings.log_levels = "uvicorn.access:info"
+apply_log_levels()
+check("the default is overridable",
+      _logging.getLogger("uvicorn.access").level == _logging.INFO)
+_settings.log_levels = _before
 
 
 print("chunk_text")

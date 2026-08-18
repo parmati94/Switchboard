@@ -54,6 +54,37 @@ logging.basicConfig(
 )
 log = logging.getLogger("switchboard")
 
+# The healthcheck polls /health every 30 seconds and uvicorn logs a line for each
+# one, so at INFO the access log is mostly the container asking itself whether it
+# is alive. Quietened by default and overridable like any other logger.
+QUIET_BY_DEFAULT = {"uvicorn.access": "warning"}
+
+
+def apply_log_levels() -> None:
+    """Apply per-logger levels from LOG_LEVELS, after uvicorn has configured its own.
+
+    Called at startup rather than at import: uvicorn.run installs its logging
+    config when it starts, which would otherwise undo anything set here.
+    """
+    wanted = dict(QUIET_BY_DEFAULT)
+    for pair in settings.log_levels.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        name, _, level = pair.partition(":")
+        if not level:
+            log.warning("ignoring malformed LOG_LEVELS entry %r — want name:level", pair)
+            continue
+        wanted[name.strip()] = level.strip()
+
+    for name, level in wanted.items():
+        try:
+            logging.getLogger(name).setLevel(level.upper())
+        except ValueError:
+            log.warning("ignoring unknown log level %r for %r", level, name)
+    if settings.log_levels:
+        log.info("log levels: %s", ", ".join(f"{k}={v}" for k, v in wanted.items()))
+
 # How recently an agent must have been seen to still own its name. Shorter than
 # this and a crashed agent couldn't re-register; much longer and a genuinely
 # stuck one blocks the name for ages.
@@ -124,6 +155,8 @@ def confusable_with(name: str, taken: list[str]) -> str | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    apply_log_levels()
+
     db = Database(settings.db_path)
     await db.connect()
 

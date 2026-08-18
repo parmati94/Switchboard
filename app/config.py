@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     port: int = 5585
     log_level: str = "info"
 
+    # Per-logger overrides, e.g. "switchboard.gateway:debug,discord:warning".
+    # log_level alone is global, which is the wrong shape for debugging: turning
+    # the whole app to debug to watch one subsystem buries it in discord.py's
+    # own chatter.
+    log_levels: str = ""
+
     @field_validator("discord_dev_guild_id", mode="before")
     @classmethod
     def _blank_is_none(cls, value):

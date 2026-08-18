@@ -25,6 +25,15 @@ services:
     # One socket per long-polling agent, so the file-descriptor ceiling is the
     # agent ceiling. The default soft limit of 1024 would fail well before
     # anything else here does, and confusingly.
+    # Docker's default is json-file with no rotation at all, so the log grows
+    # until it fills the disk — a failure that only appears months later and
+    # never points at itself. Also the only persistence there is: nothing writes
+    # a log file, and this survives restarts.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     ulimits:
       nofile:
         soft: 65536
