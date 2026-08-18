@@ -27,7 +27,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from . import __version__
 from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
-from .db import Database, default_avatar_url, new_agent_key, style_summary
+from .db import (DEFAULT_MENTION_MODE, Database, default_avatar_url, new_agent_key,
+                 style_summary)
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook, send_as_bus
 from .gateway import Gateway
 from .notifier import Notifier
@@ -491,6 +492,22 @@ async def messages(
         fresh = await db.bus_for_channel(bus["channel_id"])
         if fresh:
             bus = fresh
+    # Overlay the effective allowlist. Each row carries its own conversation's
+    # people from the join; in participants mode the bus's recent humans are
+    # merged in, once per request rather than once per row. Without this an agent
+    # would be permitted to ping someone it was never told about, and so never
+    # would.
+    if rows:
+        participants = (
+            await db.recent_participants(bus["bus_id"])
+            if (bus.get("mentions_mode") or DEFAULT_MENTION_MODE) == "participants"
+            else []
+        )
+        for row in rows:
+            row["mentionable"] = await db.mentionable_for(
+                bus, row.get("mentionable"), participants=participants
+            )
+
     stats = await db.bus_stats(bus["bus_id"])
     return MessagesResponse(
         messages=rows,
@@ -690,14 +707,9 @@ async def say(
 
     # Who this agent may actually ping. Enforced on the wire, so an agent writing
     # <@someone-else> renders a mention that notifies nobody.
-    mention_ids: list[str] = []
-    if bus["mentions_enabled"]:
-        try:
-            mention_ids = [
-                str(u["id"]) for u in json.loads(convo.get("mentionable") or "[]")
-            ]
-        except (json.JSONDecodeError, TypeError, KeyError):
-            mention_ids = []
+    mention_ids = [
+        u["id"] for u in await db.mentionable_for(bus, convo.get("mentionable"))
+    ]
 
     async def _send(url: str) -> list[str]:
         return await egress.send(

@@ -17,7 +17,7 @@ import time
 import discord
 from discord import app_commands
 
-from .db import new_bus_secret
+from .db import MENTION_MODES, new_bus_secret
 from .egress import ensure_bus_webhook, send_as_bus
 
 log = logging.getLogger("switchboard.commands")
@@ -355,10 +355,13 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
                       + ("\n-# …and more" if len(invites) > 8 else ""),
                 inline=True,
             )
+        mention_note = {"off": "nobody is notified",
+                        "conversation": "starter + who they @",
+                        "participants": "anyone who posted here lately"}
+        mode = bus["mentions_mode"]
         embed.add_field(
             name="Mentions",
-            value=("**allowed**\n-# starter + who they @"
-                   if bus["mentions_enabled"] else "**blocked**\n-# nobody is notified"),
+            value=f"**{mode}**\n-# {mention_note.get(mode, '')}",
             inline=True,
         )
 
@@ -614,31 +617,53 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         await interaction.followup.send(embed=embed, ephemeral=True)
         log.info("bus %s history reset to seq %s", bus["bus_id"], result["history_from_seq"])
 
-    @group.command(name="mentions", description="Allow or forbid agents pinging people")
-    @app_commands.describe(enabled="Off means agents can never notify anyone here")
-    async def mentions(interaction: discord.Interaction, enabled: bool) -> None:
+    @group.command(name="mentions", description="Who agents on this bus may notify")
+    @app_commands.describe(mode="Off, this exchange's people only, or anyone who has "
+                                "posted here lately")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="participants — anyone who posted here recently",
+                            value="participants"),
+        app_commands.Choice(name="conversation — only this exchange's people",
+                            value="conversation"),
+        app_commands.Choice(name="off — agents can never notify anyone", value="off"),
+    ])
+    async def mentions(interaction: discord.Interaction,
+                       mode: app_commands.Choice[str]) -> None:
         await interaction.response.defer(ephemeral=True)
         bus = await db.bus_for_channel(str(interaction.channel_id))
         if not bus:
             await interaction.followup.send(_no_bus_message(), ephemeral=True)
             return
 
-        await db.set_bus_mentions(bus["bus_id"], enabled)
-        if enabled:
-            body = (
-                "Agents on this bus **can ping** — but only the person who started a "
-                "conversation and anyone that person @-mentioned in it.\n"
-                "Everyone else stays silent: a mention of anyone not on that list "
-                "still renders in the message but notifies nobody, and `@everyone` "
-                "and role pings are always blocked. That is enforced by Discord on "
-                "every send, not by asking agents to behave."
+        await db.set_bus_mentions(bus["bus_id"], mode.value)
+
+        embed = discord.Embed(
+            title="Mentions updated",
+            description=f"`{bus['bus_id']}` · #{bus['channel_name']}",
+            colour=COLOUR_GREEN if mode.value != "off" else COLOUR_BRASS,
+        )
+        embed.add_field(name="Mode", value=f"**{mode.value}**\n-# {MENTION_MODES[mode.value]}",
+                        inline=False)
+
+        if mode.value == "participants":
+            people = await db.recent_participants(bus["bus_id"])
+            embed.add_field(
+                name=f"Reachable right now ({len(people)})",
+                value=", ".join(p["name"] for p in people[:20]) or "nobody has posted here yet",
+                inline=False,
             )
-        else:
-            body = (
-                "Agents on this bus **cannot ping anyone**. Mentions will still "
-                "render in their messages but will never notify."
+            embed.add_field(
+                name="Why this exists",
+                value="An exchange an agent started had nobody on its allowlist, so "
+                      "agents could not ping anyone in it — which is most of them.",
+                inline=False,
             )
-        await interaction.followup.send(body, ephemeral=True)
+
+        embed.set_footer(
+            text="Enforced by Discord on every send, not by asking agents to behave. "
+                 "@everyone and role pings are always blocked."
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @group.command(name="style", description="Set how agents write on this bus")
     @app_commands.describe(

@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -159,6 +159,33 @@ STYLE_PRESETS = {
 }
 DEFAULT_STYLE = "normal"
 
+# Who agents may actually ping. Enforced on the wire via allowed_mentions, so a
+# narrower mode is a real control rather than an instruction that can drift.
+#
+# `conversation` was the only behaviour and it under-delivered badly: the
+# allowlist is seeded from a human message, so a conversation an agent opened had
+# an empty one and nobody could be pinged in it at all — which is most banter
+# threads. `participants` fixes that by treating having spoken in the channel as
+# the thing that makes you reachable.
+MENTION_MODES = {
+    "off": "Agents cannot notify anyone. Mentions still render as text.",
+    "conversation": (
+        "Only the human who started an exchange, plus anyone they @-mentioned in "
+        "it. Exchanges an agent started reach nobody."
+    ),
+    "participants": (
+        "Anyone who has posted in this channel recently, plus the conversation's "
+        "own people. Having spoken here is what makes you reachable."
+    ),
+}
+DEFAULT_MENTION_MODE = "participants"
+
+# How long having spoken keeps you reachable. Participation is stickier than
+# attention, so this is deliberately short: someone who chimed in last week has
+# probably stopped watching, and being pinged by a bot calling them names is a
+# poor reintroduction.
+PARTICIPANT_WINDOW_DAYS = 7.0
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -189,6 +216,8 @@ CREATE TABLE IF NOT EXISTS buses (
     -- deleting anything: asking an agent to forget does not work, but refusing
     -- to serve the messages does.
     history_from_seq INTEGER NOT NULL DEFAULT 0,
+    -- off | conversation | participants. See MENTION_MODES.
+    mentions_mode   TEXT NOT NULL DEFAULT 'participants',
     -- How it reads. Delivered to agents at registration and on every poll, so
     -- the human never has to relay it.
     style_preset   TEXT    NOT NULL DEFAULT 'normal',
@@ -379,6 +408,8 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
         "limit_agent_turns": row["limit_agent_turns"],
         "history_from_seq": row["history_from_seq"],
         "mentions_enabled": bool(row["mentions_enabled"]),
+        "mentions_mode": (row["mentions_mode"] if _has(row, "mentions_mode")
+                          else DEFAULT_MENTION_MODE),
         "style": _style_for(row),
         # The raw stored overrides, as distinct from the effective values in
         # "style": max_chars there has already fallen back to the length preset,
@@ -494,10 +525,19 @@ class Database:
             ("style_edge", "TEXT"),
             ("limit_agent_turns", "INTEGER NOT NULL DEFAULT 6"),
             ("history_from_seq", "INTEGER NOT NULL DEFAULT 0"),
+            ("mentions_mode", "TEXT NOT NULL DEFAULT 'participants'"),
         ):
             if column not in bus_cols:
                 log.info("migrating buses: adding %s", column)
                 await self._conn.execute(f"ALTER TABLE buses ADD COLUMN {column} {ddl}")
+                if column == "mentions_mode":
+                    # mentions_enabled was a boolean. Off stays off; on becomes the
+                    # behaviour it used to have, not the new default — nobody's
+                    # bus should silently widen who agents can ping.
+                    await self._conn.execute(
+                        "UPDATE buses SET mentions_mode = "
+                        "CASE WHEN mentions_enabled = 0 THEN 'off' ELSE 'conversation' END"
+                    )
 
         agent_cols = await self._columns("agents")
         if "renamed_at" not in agent_cols:
@@ -691,25 +731,109 @@ class Database:
     async def seed_conversation(
         self, bus_id: str, conversation_id: str, mentionable: list[dict]
     ) -> None:
-        """Open a conversation with its mention allowlist, from a human message."""
+        """Open a conversation with its mention allowlist, from a human message.
+
+        The allowlist accumulates. It used to be replaced on every human message,
+        so posting "@alice thoughts?" and then a bare "any update?" quietly
+        dropped alice out of the exchange she had been summoned into.
+        """
         assert self._conn
+        async with self._conn.execute(
+            "SELECT mentionable FROM conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        ) as cur:
+            row = await cur.fetchone()
+
+        merged: dict[str, dict] = {}
+        if row and row["mentionable"]:
+            try:
+                for person in json.loads(row["mentionable"]):
+                    merged[str(person["id"])] = person
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+        # Later wins: a person re-summoned is upgraded from author to summoned.
+        for person in mentionable:
+            merged[str(person["id"])] = person
+
         await self._conn.execute(
             "INSERT INTO conversations "
             "(conversation_id, bus_id, started_at, mentionable, seeded_by) "
             "VALUES (?, ?, ?, ?, 'human') "
             "ON CONFLICT(conversation_id) DO UPDATE SET "
             "mentionable = excluded.mentionable, seeded_by = 'human'",
-            (conversation_id, bus_id, time.time(), json.dumps(mentionable)),
+            (conversation_id, bus_id, time.time(), json.dumps(list(merged.values()))),
         )
         await self._conn.commit()
 
-    async def set_bus_mentions(self, bus_id: str, enabled: bool) -> None:
+    async def set_bus_mentions(self, bus_id: str, mode: str) -> None:
+        """Set the mention mode. mentions_enabled is kept in step so a rollback
+        to an older image finds the boolean it expects rather than a bus that
+        silently stops notifying anyone."""
         assert self._conn
         await self._conn.execute(
-            "UPDATE buses SET mentions_enabled = ? WHERE bus_id = ?",
-            (1 if enabled else 0, bus_id),
+            "UPDATE buses SET mentions_mode = ?, mentions_enabled = ? WHERE bus_id = ?",
+            (mode, 0 if mode == "off" else 1, bus_id),
         )
         await self._conn.commit()
+
+    async def mentionable_for(self, bus: dict, conversation_mentionable,
+                              participants: list[dict] | None = None) -> list[dict]:
+        """Who agents may notify, by this bus's mode. One resolver, so what /messages
+        advertises and what /say enforces can never disagree.
+
+        An agent that is not told it may ping someone will not try, so the same list
+        has to ride the envelope and gate the wire.
+        """
+        people: dict[str, dict] = {}
+        mode = bus.get("mentions_mode") or DEFAULT_MENTION_MODE
+        if mode == "off":
+            return []
+
+        if isinstance(conversation_mentionable, str):
+            try:
+                conversation_mentionable = json.loads(conversation_mentionable or "[]")
+            except json.JSONDecodeError:
+                conversation_mentionable = []
+        for person in conversation_mentionable or []:
+            try:
+                people[str(person["id"])] = person
+            except (TypeError, KeyError):
+                continue
+
+        if mode == "participants":
+            # Conversation people first, so someone deliberately summoned keeps that
+            # role rather than being flattened to a generic participant. Callers
+            # shaping many messages pass the list in, so it is one query per request.
+            if participants is None:
+                participants = await self.recent_participants(bus["bus_id"])
+            for person in participants:
+                people.setdefault(person["id"], person)
+
+        return list(people.values())
+
+    async def recent_participants(
+        self, bus_id: str, within_days: float = PARTICIPANT_WINDOW_DAYS
+    ) -> list[dict]:
+        """Humans who have posted in this bus lately, newest first.
+
+        Reads the ledger rather than Discord, so it needs no privileged members
+        intent — author_id is already recorded on every observed message. Only
+        humans: agents are webhook identities with no user id and can never be
+        notified, whatever anyone writes.
+        """
+        assert self._conn
+        cutoff = time.time() - within_days * 86400
+        async with self._conn.execute(
+            "SELECT author_id, author_name, MAX(created_at) AS seen FROM messages "
+            "WHERE bus_id = ? AND author_kind = 'human' AND author_id IS NOT NULL "
+            "AND created_at > ? GROUP BY author_id ORDER BY seen DESC",
+            (bus_id, cutoff),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {"id": str(r["author_id"]), "name": r["author_name"], "role": "participant"}
+            for r in rows
+        ]
 
     async def open_conversation(self, bus_id: str, conversation_id: str) -> dict:
         """Idempotent. Returns the conversation's current state."""

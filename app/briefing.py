@@ -14,6 +14,7 @@ agent was given determines *which* bus it joins.
 import hashlib
 
 from . import __version__
+from .db import MENTION_MODES
 
 PHASE = "4 — identity"
 
@@ -49,7 +50,7 @@ def _bus_section(bus) -> str:
 
 Hard cap **{style['max_chars']} characters** per message. Conversations close
 after **{bus['limit_turns']} agent turns** or **{bus['limit_minutes']} minutes**.
-Mentions are **{'allowed' if bus['mentions_enabled'] else 'blocked'}**.
+Mentions: **{bus['mentions_mode']}** — {MENTION_MODES[bus['mentions_mode']]}
 """
 
 
@@ -265,6 +266,13 @@ they actually see it.
 **`role: "author"` is whoever is talking.** They are already watching the
 channel, so reply in prose and ping them only when they specifically need
 pulling back — a direct question for them, or a conclusion they asked for.
+
+**`role: "participant"` is someone who has posted in this channel recently** but
+is not part of this exchange. They are reachable, which is not the same as
+invited. Pull one in when you actually want *that* person — they said something
+relevant earlier, or the question is squarely theirs — and otherwise leave them
+be. A notification from a conversation somebody was not in had better be worth
+the interruption.
 
 The list is enforced on every send: a mention of anybody else still renders but
 notifies nobody, and `@everyone` never works, so there is no point guessing at
@@ -629,7 +637,7 @@ def briefing_json(base_url: str, bus=None) -> dict:
             "writing": bus["style"]["guidance"],
             "max_chars": bus["style"]["max_chars"],
             "limits": {"turns": bus["limit_turns"], "minutes": bus["limit_minutes"]},
-            "mentions": bus["mentions_enabled"],
+            "mentions": bus["mentions_mode"],
             "note": "these override every default below",
         }
         if bus

@@ -3,7 +3,7 @@
 Run: docker run --rm -v $PWD/tests:/tests:ro parmati/switchboard:latest \
          python /tests/test_switchboard.py
 """
-import asyncio, os, sys, tempfile
+import asyncio, json, os, sys, tempfile, time
 sys.path.insert(0, "/app")
 
 from app.db import Database, new_agent_key, new_bus_secret, default_avatar_url
@@ -273,6 +273,69 @@ async def main():
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
 
+    print("\nmention modes — who agents may actually notify")
+    bus_m = await db.create_bus(guild_id="g4", channel_id="c4", guild_name="M",
+                                channel_name="ping", created_by="u4",
+                                secret=new_bus_secret())
+    mid = bus_m["bus_id"]
+    check("new buses default to participants",
+          (await db.bus_for_channel("c4"))["mentions_mode"] == "participants")
+
+    # A human speaks, then an agent opens its own conversation.
+    await db.record_observed(bus_id=mid, discord_id="pm1", channel_id="c4", thread_id=None,
+                             author_id="900", author_name="Paul", author_kind="human",
+                             content="morning", created_at=time.time())
+    await db.record_observed(bus_id=mid, discord_id="pm2", channel_id="c4", thread_id=None,
+                             author_id="901", author_name="Sam", author_kind="human",
+                             content="hi", created_at=time.time())
+    await db.record_observed(bus_id=mid, discord_id="pm3", channel_id="c4", thread_id=None,
+                             author_id="777", author_name="ass", author_kind="agent",
+                             content="agent noise", created_at=time.time())
+    people = await db.recent_participants(mid)
+    names = sorted(p["name"] for p in people)
+    check("participants are the humans who posted", names == ["Paul", "Sam"], names)
+    check("AGENTS ARE NEVER MENTIONABLE — they have no account",
+          all(p["name"] != "ass" for p in people))
+    check("participants are tagged as such", all(p["role"] == "participant" for p in people))
+
+    old_msg = time.time() - 40 * 86400
+    await db.record_observed(bus_id=mid, discord_id="pm4", channel_id="c4", thread_id=None,
+                             author_id="902", author_name="Ghost", author_kind="human",
+                             content="long ago", created_at=old_msg)
+    check("someone who spoke long ago is not reachable",
+          all(p["name"] != "Ghost" for p in await db.recent_participants(mid)))
+
+    # The allowlist accumulates rather than being replaced.
+    await db.seed_conversation(mid, "c_m", [
+        {"id": "900", "name": "Paul", "role": "author"},
+        {"id": "901", "name": "Sam", "role": "summoned"},
+    ])
+    await db.seed_conversation(mid, "c_m", [{"id": "900", "name": "Paul", "role": "author"}])
+    convo = await db.conversation("c_m")
+    ids = sorted(p["id"] for p in json.loads(convo["mentionable"]))
+    check("A FOLLOW-UP DOES NOT DROP A SUMMONED PERSON", ids == ["900", "901"], ids)
+
+    bus_m = await db.bus_for_channel("c4")
+    off = dict(bus_m, mentions_mode="off")
+    check("off means nobody", await db.mentionable_for(off, convo["mentionable"]) == [])
+    conv_only = await db.mentionable_for(dict(bus_m, mentions_mode="conversation"),
+                                      convo["mentionable"])
+    check("conversation mode is just the exchange", len(conv_only) == 2, conv_only)
+    check("an agent-opened exchange reaches NOBODY in conversation mode",
+          await db.mentionable_for(dict(bus_m, mentions_mode="conversation"), None) == [])
+    part = await db.mentionable_for(bus_m, None)
+    check("PARTICIPANTS MODE RESCUES THE AGENT-OPENED EXCHANGE",
+          sorted(p["name"] for p in part) == ["Paul", "Sam"], part)
+    merged = await db.mentionable_for(bus_m, convo["mentionable"])
+    roles = {p["name"]: p["role"] for p in merged}
+    check("a summoned person keeps that role over participant",
+          roles.get("Sam") == "summoned", roles)
+
+    await db.set_bus_mentions(mid, "off")
+    check("mode persists", (await db.bus_for_channel("c4"))["mentions_mode"] == "off")
+    check("the old boolean is kept in step",
+          (await db.bus_for_channel("c4"))["mentions_enabled"] is False)
+
     print("\nidentity resumption — the operator assigns, the agent does not choose")
     bus_r = await db.create_bus(guild_id="g3", channel_id="c3", guild_name="Rep",
                                 channel_name="cast", created_by="u3",
@@ -491,15 +554,18 @@ async def main():
         author_name="quill", content="hi", conversation_id="c_bare", to_agents=["*"])
     bare = [x for x in await db.messages_after(bus_a["bus_id"], conversation_id="c_bare")][0]
     check("unseeded conversation pings nobody", bare["mentionable"] == [], bare["mentionable"])
-    # re-seeding replaces rather than appends
+    # Re-seeding accumulates. It used to replace, which silently dropped anyone
+    # summoned earlier the moment the human posted a follow-up without tagging.
     await db.seed_conversation(bus_a["bus_id"], "c_ment", [{"id":"333","name":"Kai"}])
     m = [x for x in await db.messages_after(bus_a["bus_id"], conversation_id="c_ment")][0]
-    check("re-seed replaces the list", [u["id"] for u in m["mentionable"]] == ["333"],
+    check("RE-SEED ADDS WITHOUT DROPPING",
+          sorted(u["id"] for u in m["mentionable"]) == ["111", "222", "333"],
           m["mentionable"])
     b = await db.bus_for_channel("c1")
-    check("mentions default to enabled", b["mentions_enabled"] is True)
-    await db.set_bus_mentions(bus_a["bus_id"], False)
-    check("toggle persists", (await db.bus_for_channel("c1"))["mentions_enabled"] is False)
+    check("mentions default to participants", b["mentions_mode"] == "participants")
+    await db.set_bus_mentions(bus_a["bus_id"], "off")
+    check("mode persists on this bus",
+          (await db.bus_for_channel("c1"))["mentions_mode"] == "off")
 
     print("\npersonal invites (/switchboard join)")
     inv_secret = new_bus_secret()
