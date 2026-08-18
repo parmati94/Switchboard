@@ -7,7 +7,9 @@ import asyncio, json, os, sys, tempfile, time
 sys.path.insert(0, "/app")
 
 from app.db import (AVATAR_CHARACTERS, AVATAR_MINIMALIST, AVATAR_STYLES,
-                    NAMING_AVATARS, Database, avatar_style_of, new_avatar_seed,
+                    NAMING_AVATARS, Database, avatar_background_of,
+                    avatar_style_of, chosen_background, new_avatar_seed,
+                    normalise_background,
                     default_avatar_url, new_agent_key, new_bus_secret)
 from app.commands import resolve_style
 from app.egress import chunk_text
@@ -329,6 +331,32 @@ async def main():
           default_avatar_url("something-else", "crude", "pixel-art") != chosen)
     check("someone else's url is not ours to restyle",
           avatar_style_of("https://example.com/me.png") is None)
+    check("a hex background is accepted", normalise_background("2f6b4f") == "2f6b4f")
+    check("the hash is optional", normalise_background("#A83A2E") == "a83a2e")
+    check("shorthand hex works, as DiceBear allows", normalise_background("abc") == "abc")
+    check("nothing stays nothing", normalise_background(None) is None)
+    for bad in ("12345", "1234567", "nonsense", "transparent", "ff000"):
+        try:
+            normalise_background(bad); ok = False
+        except ValueError:
+            ok = True
+        check(f"{bad!r} is refused before it reaches Discord", ok)
+
+    green = default_avatar_url("s1", "crude", "fun-emoji", "2f6b4f")
+    check("A CHOSEN COLOUR LANDS IN THE URL",
+          avatar_background_of(green) == "2f6b4f", green)
+    check("and is recognised as deliberate", chosen_background(green) == "2f6b4f")
+    palette_face = default_avatar_url("s2", "crude", "fun-emoji")
+    check("a seed-derived colour is not treated as chosen",
+          chosen_background(palette_face) is None, palette_face)
+    check("a deliberate colour survives a reroll",
+          avatar_background_of(default_avatar_url(
+              new_avatar_seed(), "crude", "fun-emoji", chosen_background(green)))
+          == "2f6b4f")
+    check("a derived one moves with the seed",
+          avatar_background_of(default_avatar_url("s3", "crude", "fun-emoji"))
+          != avatar_background_of(palette_face))
+
     check("names are url-safe in the seed",
           " " not in default_avatar_url("two words", "human"))
 

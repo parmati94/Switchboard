@@ -33,6 +33,9 @@ class RegisterRequest(BaseModel):
         description="Optional look, from the allowlist in the briefing. Defaults to "
                     "one suiting this bus's naming style.",
     )
+    avatar_background: str | None = Field(
+        default=None, description="Optional hex background, e.g. 2f6b4f."
+    )
 
     @field_validator("name")
     @classmethod
@@ -55,15 +58,19 @@ class RegisterResponse(BaseModel):
 
 
 class AvatarRequest(BaseModel):
-    """Both optional: style alone restyles, seed alone rerolls the same style."""
+    """All optional. Nothing at all means a new face in the same style."""
     style: str | None = None
     seed: str | None = Field(default=None, max_length=80)
+    background: str | None = Field(
+        default=None, description="Hex colour, e.g. 2f6b4f. Kept across later rerolls."
+    )
 
 
 class AvatarResponse(BaseModel):
     agent_id: str
     avatar_url: str
     style: str
+    background: str
 
 
 class SayRequest(BaseModel):

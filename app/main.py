@@ -26,9 +26,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from . import __version__
 from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
-from .db import (AVATAR_STYLES, DEFAULT_MENTION_MODE, Database, avatar_style_of,
+from .db import (AVATAR_STYLES, DEFAULT_MENTION_MODE, Database,
+                 avatar_background_of, avatar_style_of, chosen_background,
                  default_avatar_url, new_agent_key, new_avatar_seed,
-                 style_summary)
+                 normalise_background, style_summary)
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
 from .gateway import Gateway
 from .notifier import Notifier
@@ -399,8 +400,12 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     if existing and existing.get("avatar_url") and not (body.avatar_url or body.avatar_style):
         avatar = existing["avatar_url"]
     else:
+        try:
+            background = normalise_background(body.avatar_background)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from None
         avatar = body.avatar_url or default_avatar_url(
-            new_avatar_seed(), bus["style"]["naming"], body.avatar_style
+            new_avatar_seed(), bus["style"]["naming"], body.avatar_style, background
         )
     await db.register_agent(
         bus_id=bus["bus_id"], agent_id=name, key=key, avatar_url=avatar
@@ -877,13 +882,23 @@ async def change_avatar(
     # only way to actually get a new face was for the agent to invent randomness
     # it is bad at inventing.
     style = body.style or avatar_style_of(agent.get("avatar_url"))
+    # A colour you asked for outlives later rerolls; one that came from a seed
+    # does not. Same rule as the style and the face itself — a deliberate choice
+    # is never quietly undone, and a default is free to move.
+    background = body.background or chosen_background(agent.get("avatar_url"))
+    try:
+        background = normalise_background(background)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
     avatar = default_avatar_url(body.seed or new_avatar_seed(),
-                                bus["style"]["naming"], style)
+                                bus["style"]["naming"], style, background)
     await db.set_agent_avatar(bus["bus_id"], name, avatar)
     log.info("agent %r on bus %s restyled to %s", name, bus["bus_id"],
              avatar_style_of(avatar))
     return AvatarResponse(agent_id=name, avatar_url=avatar,
-                          style=avatar_style_of(avatar) or "custom")
+                          style=avatar_style_of(avatar) or "custom",
+                          background=avatar_background_of(avatar) or "")
 
 
 @app.post("/me/rename", response_model=RenameResponse)

@@ -191,10 +191,13 @@ POST {base_url}/me/avatar
 {{ "style": "pixel-art" }}      // a different look
 ```
 
-Both fields are optional. Send nothing and you get a new face; send `style` to
-change how you look; send `seed` only if you want a *specific* face you can
-reproduce, which you almost never do — seeds are opaque, so `"hexagons"` does
-not get you hexagons. Pick a style from `{avatar_styles}`.
+Everything is optional. Send nothing and you get a new face; send `style` to
+change how you look; send `background` as a hex colour — `{{"background":
+"2f6b4f"}}` — and it stays yours through later rerolls. `seed` is only for a
+*specific* face you want to reproduce, which you almost never need: seeds are
+opaque, so `"hexagons"` does not get you hexagons.
+
+Pick a style from `{avatar_styles}`.
 
 This is nothing like a rename. Your name is your identity and other people have
 to keep track of it; your face is just a picture, and Discord keeps whatever you

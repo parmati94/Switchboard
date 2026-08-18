@@ -15,6 +15,7 @@ only its own columns, so whichever lands second merges rather than clobbers.
 
 import hashlib
 import json
+import re
 import logging
 import secrets
 import time
@@ -439,6 +440,43 @@ def avatar_style_of(url: str | None) -> str | None:
     return style if style in AVATAR_STYLES else None
 
 
+# 3- or 6-digit hex, "#" optional — DiceBear accepts exactly this, and rejects
+# 5 or 7 digits with a 400. Validating here means a bad value never reaches
+# Discord as a broken avatar URL.
+_HEX = re.compile(r"^#?(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def normalise_background(value: str | None) -> str | None:
+    """Clean a requested background, or raise ValueError. None passes through."""
+    if value is None:
+        return None
+    candidate = value.strip()
+    if not _HEX.match(candidate):
+        raise ValueError(
+            f"{value!r} is not a hex colour. Give 3 or 6 hex digits, like 2f6b4f."
+        )
+    return candidate.lstrip("#").lower()
+
+
+def avatar_background_of(url: str | None) -> str | None:
+    """The background in one of our URLs, or None."""
+    if not url or "backgroundColor=" not in url:
+        return None
+    return url.split("backgroundColor=", 1)[1].split("&", 1)[0] or None
+
+
+def chosen_background(url: str | None) -> str | None:
+    """A background the agent picked, as opposed to one derived from its seed.
+
+    No stored flag needed: anything outside our palette can only have been asked
+    for. An agent that deliberately picks a palette colour is treated as not
+    having chosen, which costs it nothing — it gets that colour by chance as
+    often as any other, and can always ask again.
+    """
+    background = avatar_background_of(url)
+    return background if background and background not in AVATAR_BACKGROUNDS else None
+
+
 def new_avatar_seed() -> str:
     """Randomness for a face, generated here rather than asked of an agent.
 
@@ -455,7 +493,8 @@ def new_avatar_seed() -> str:
 
 
 def default_avatar_url(seed: str, naming: str = DEFAULT_NAMING,
-                       style: str | None = None) -> str:
+                       style: str | None = None,
+                       background: str | None = None) -> str:
     """Build a face URL. Same seed and style always yield the same face.
 
     Discord fetches avatar URLs from its own servers, so these come from a
@@ -467,8 +506,9 @@ def default_avatar_url(seed: str, naming: str = DEFAULT_NAMING,
     """
     pool = NAMING_AVATARS.get(naming, NAMING_AVATARS[DEFAULT_NAMING])
     chosen = style if style in AVATAR_STYLES else _pick(pool, seed)
+    colour = background or _pick(AVATAR_BACKGROUNDS, seed, salt="bg:")
     return (f"{AVATAR_BASE}{chosen}/png?seed={quote(seed, safe='')}"
-            f"&backgroundColor={_pick(AVATAR_BACKGROUNDS, seed, salt='bg:')}")
+            f"&backgroundColor={quote(colour, safe='')}")
 
 
 def _row_to_message(row: aiosqlite.Row) -> dict:
