@@ -295,20 +295,39 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
             detail="Gateway is still connecting or cannot see the bus channel. Retry.",
         )
 
+    # An invite minted with /switchboard join as:<identity> assigns who this
+    # agent is. Whether to resume a character is an operator decision, so it
+    # travels in the credential rather than being offered to the agent — which
+    # also means no name is chosen here, and the uniqueness and
+    # recently-used checks below have nothing to police.
+    assigned = await db.identity_for_secret(body.secret)
+    name = assigned or body.name
+
     # Re-registering an existing name rotates its key, which is how an agent that
     # lost its credential recovers without an admin. But two different agents
     # picking the same name would then silently steal each other's identity —
     # the first one starts getting 403s mid-conversation with no idea why. So
     # only allow it once the incumbent has gone quiet.
-    existing = await db.get_agent(bus["bus_id"], body.name)
+    existing = await db.get_agent(bus["bus_id"], name)
     if existing and not existing["revoked_at"]:
         idle = time.time() - (existing["last_seen"] or 0)
         if idle < ACTIVE_AGENT_WINDOW_S:
+            if assigned:
+                # Nothing the agent can do about this one — it did not choose the
+                # name, so telling it to pick another would be nonsense.
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"The identity {name!r} you were issued is still in use "
+                        f"(seen {idle:.0f}s ago). Tell the human: that agent has to "
+                        "stop, or they need to mint a line for a different identity."
+                    ),
+                )
             taken = [a["id"] for a in await db.roster(bus["bus_id"])]
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"An agent named {body.name!r} is already active here "
+                    f"An agent named {name!r} is already active here "
                     f"(seen {idle:.0f}s ago). Names must be unique on a bus. "
                     f"Pick a different one — already taken: {taken}. "
                     "Choose something describing your role, not a generic label."
@@ -317,7 +336,10 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
 
     # Includes retired names: reusing one makes the channel history ambiguous,
     # and agents were converging on the same handful because nothing stopped them.
-    recent = [n for n in await db.names_used_recently(bus["bus_id"]) if n != body.name]
+    # Skipped for an assigned identity: that list exists to stop an agent
+    # *choosing* a stale name, and here the operator chose it deliberately.
+    recent = ([] if assigned else
+              [n for n in await db.names_used_recently(bus["bus_id"]) if n != body.name])
     clash = confusable_with(body.name, recent)
     if clash:
         raise HTTPException(
@@ -331,41 +353,48 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         )
 
     key = new_agent_key()
-    avatar = body.avatar_url or default_avatar_url(body.name)
+    avatar = body.avatar_url or default_avatar_url(name)
     await db.register_agent(
-        bus_id=bus["bus_id"], agent_id=body.name, key=key, avatar_url=avatar
+        bus_id=bus["bus_id"], agent_id=name, key=key, avatar_url=avatar
     )
 
     try:
         webhook_url = await ensure_agent_webhook(
-            gateway.client, db, settings, channel, bus, body.name
+            gateway.client, db, settings, channel, bus, name
         )
     except Exception:  # noqa: BLE001 - fall back rather than fail registration
-        log.exception("agent webhook provisioning failed for %r", body.name)
+        log.exception("agent webhook provisioning failed for %r", name)
         webhook_url = None
 
     # Announce through the agent's own webhook so the human sees who arrived
     # and what they look like. Best-effort: a failed hello must not fail a
     # registration that otherwise succeeded.
+    # `existing` was read before register_agent, so it still reflects whether
+    # this identity was already on the bus — which is exactly what makes this a
+    # resumption rather than an arrival.
+    resumed = existing is not None
+    previously = await db.messages_by_agent(bus["bus_id"], name) if resumed else None
+
     try:
         await egress.send(
             webhook_url=webhook_url or bus["webhook_url"],
-            text=f"**{body.name}** joined the bus.",
-            username=body.name,
+            text=f"**{name}** is back." if resumed else f"**{name}** joined the bus.",
+            username=name,
             avatar_url=avatar,
         )
     except Exception:  # noqa: BLE001
-        log.warning("join announcement failed for %r", body.name, exc_info=True)
+        log.warning("join announcement failed for %r", name, exc_info=True)
 
-    log.info("agent %r registered on bus %s", body.name, bus["bus_id"])
+    log.info("agent %r registered on bus %s", name, bus["bus_id"])
     return RegisterResponse(
-        agent_id=body.name,
+        agent_id=name,
         bus_id=bus["bus_id"],
         bus={"guild": bus["guild_name"], "channel": bus["channel_name"]},
         key=key,
         avatar_url=avatar,
         own_webhook=webhook_url is not None,
-        roster=_mark_self(await db.roster(bus["bus_id"]), body.name),
+        roster=_mark_self(await db.roster(bus["bus_id"]), name),
+        previously=previously or None,
         protocol={
             "protocol_rev": PROTOCOL_REV,
             "read_this_next": f"{settings.public_url.rstrip('/')}/conduct",

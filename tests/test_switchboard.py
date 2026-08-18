@@ -273,6 +273,62 @@ async def main():
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
 
+    print("\nidentity resumption — the operator assigns, the agent does not choose")
+    bus_r = await db.create_bus(guild_id="g3", channel_id="c3", guild_name="Rep",
+                                channel_name="cast", created_by="u3",
+                                secret=new_bus_secret())
+    rid = bus_r["bus_id"]
+    await db.register_agent(bus_id=rid, agent_id="ButtSoup", key=new_agent_key(),
+                            avatar_url="a")
+    await db.register_agent(bus_id=rid, agent_id="Fenwick", key=new_agent_key(),
+                            avatar_url="b")
+    for i, (who, text) in enumerate([
+        ("ButtSoup", "first thing ButtSoup said"),
+        ("Fenwick", "something Fenwick said"),
+        ("ButtSoup", "second thing ButtSoup said"),
+    ]):
+        await db.record_observed(bus_id=rid, discord_id=f"r{i}", channel_id="c3",
+                                 thread_id=None, author_id="1", author_name=who,
+                                 author_kind="agent", content=text, created_at=1000.0 + i)
+
+    plain = new_bus_secret()
+    bound = new_bus_secret()
+    await db.create_invite(rid, plain, "u3", "Paul")
+    await db.create_invite(rid, bound, "u3", "Paul", agent_id="ButtSoup")
+    check("a plain invite binds no identity", await db.identity_for_secret(plain) is None)
+    check("A BOUND INVITE CARRIES THE IDENTITY",
+          await db.identity_for_secret(bound) == "ButtSoup")
+    check("both still resolve to the bus",
+          (await db.bus_for_secret(bound))["bus_id"] == rid
+          and (await db.bus_for_secret(plain))["bus_id"] == rid)
+
+    prev = await db.messages_by_agent(rid, "ButtSoup")
+    check("previously is that identity's own lines only",
+          prev == ["first thing ButtSoup said", "second thing ButtSoup said"], prev)
+    check("nobody else's words come back", all("Fenwick" not in p for p in prev))
+
+    # The horizon hides the old thread; it must not hide who you were.
+    await db.reset_history(rid)
+    check("reset hides the thread",
+          await db.messages_after(rid, after=0, limit=200) == [])
+    check("RESET DOES NOT HIDE YOUR OWN PAST",
+          await db.messages_by_agent(rid, "ButtSoup") == prev)
+
+    # register_agent stamps last_seen, so both look live. Age ButtSoup the way a
+    # stopped agent ages: nothing revoked it, it simply went quiet.
+    await db._conn.execute("UPDATE agents SET last_seen = 0 WHERE bus_id = ? "
+                           "AND agent_id = ?", (rid, "ButtSoup"))
+    await db._conn.commit()
+    await db.touch_agent(rid, "Fenwick")
+    dormant = [d["id"] for d in await db.dormant_agents(rid)]
+    check("a live identity is not offered", "Fenwick" not in dormant, dormant)
+    check("an idle one is", "ButtSoup" in dormant, dormant)
+    await db.revoke_agent(rid, "Fenwick")
+    dormant = {d["id"]: d for d in await db.dormant_agents(rid)}
+    check("REVOKING RETURNS IT TO THE CAST", "Fenwick" in dormant, list(dormant))
+    check("and it is marked revoked", dormant["Fenwick"]["revoked"] is True)
+    check("idle ones are not marked revoked", dormant["ButtSoup"]["revoked"] is False)
+
     print("\nrefusal events — the record of what the server said no to")
     await db.record_event(bus_a["bus_id"], "collision", agent_id="quill",
                           conversation_id="c_1",
@@ -475,11 +531,14 @@ async def main():
     check("old secret stops working", await db.bus_for_secret(secret_a) is None)
     check("new secret works",
           (await db.bus_for_secret(rotated))["bus_id"] == bus_a["bus_id"])
+    # Derived, not hardcoded — a hardcoded expectation here has broken every time
+    # a test above added a bus.
+    before = await db.enabled_bus_count()
     await db.set_bus_enabled(bus_a["bus_id"], False)
     check("disabled bus rejects its secret", await db.bus_for_secret(rotated) is None)
     check("disabled bus still readable by channel",
           (await db.bus_for_channel("c1"))["enabled"] is False)
-    check("enabled count drops", await db.enabled_bus_count() == 1)
+    check("enabled count drops", await db.enabled_bus_count() == before - 1)
 
     await db.close()
 

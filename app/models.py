@@ -44,6 +44,9 @@ class RegisterResponse(BaseModel):
     own_webhook: bool
     roster: list[dict]
     protocol: dict
+    # Present only when this registration took up an existing identity: the
+    # lines that agent posted before, so it can pick the character back up.
+    previously: list[str] | None = None
 
 
 class SayRequest(BaseModel):

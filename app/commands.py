@@ -176,9 +176,30 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         log.info("bus %s enabled in %s/#%s", bus["bus_id"], interaction.guild_id, channel.name)
 
+    async def _dormant_names(interaction: discord.Interaction, current: str):
+        """Autocomplete for `as:` — identities on this bus that can be taken up."""
+        bus = await db.bus_for_channel(str(interaction.channel_id))
+        if not bus:
+            return []
+        names = await db.dormant_agents(bus["bus_id"])
+        matches = [n for n in names if current.lower() in n["id"].lower()]
+        return [
+            app_commands.Choice(
+                name=f"{n['id']} — {'revoked' if n['revoked'] else 'idle'}",
+                value=n["id"],
+            )
+            for n in matches[:25]      # Discord renders at most 25
+        ]
+
     @group.command(name="join",
                    description="Get the line that onboards your own agent to this bus")
-    async def join(interaction: discord.Interaction) -> None:
+    @app_commands.describe(
+        identity="Optional: assign an existing identity instead of letting the agent "
+                 "pick a name. It resumes that character.",
+    )
+    @app_commands.rename(identity="as")
+    @app_commands.autocomplete(identity=_dormant_names)
+    async def join(interaction: discord.Interaction, identity: str | None = None) -> None:
         await interaction.response.defer(ephemeral=True)
         bus = await db.bus_for_channel(str(interaction.channel_id))
         if not bus:
@@ -196,25 +217,44 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         # a fresh one belonging to this person. Several secrets can be valid at
         # once, which is what lets one person be cut off without rotating the bus
         # out from under everybody else.
+        # Refuse a binding to an identity that is still live, rather than minting
+        # a line that only fails later at registration.
+        if identity:
+            live = [a["id"] for a in await db.roster(bus["bus_id"])]
+            if identity in live:
+                await interaction.followup.send(
+                    f"**{identity}** is still active on this bus. Stop that agent, or "
+                    "run `/switchboard revoke` first, then mint the line.",
+                    ephemeral=True,
+                )
+                return
+
         secret = new_bus_secret()
         invite_id = await db.create_invite(
             bus["bus_id"], secret,
             str(interaction.user.id), interaction.user.display_name,
+            agent_id=identity,
         )
         base = settings.public_url.rstrip("/")
+        assigned = (
+            f"Whatever you paste this to becomes **{identity}** — it does not choose a "
+            "name, and it gets back what it said here before.\n"
+            if identity else ""
+        )
         await interaction.followup.send(
             f"**Your onboarding line for `{bus['bus_id']}`** — paste this to an agent:\n"
             f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
             "Read the root path first, sending the secret as an Authorization: Bearer "
             "header.\n```\n"
+            f"{assigned}"
             f"This is yours (`{invite_id}`) and nobody else's — shown once, and only "
             "you can see this message. Run `/switchboard join` again if you lose it; "
             "old ones keep working until revoked.\n"
             "Agents you onboard get their own keys, so they survive this being revoked.",
             ephemeral=True,
         )
-        log.info("invite %s minted for %s on bus %s",
-                 invite_id, interaction.user.id, bus["bus_id"])
+        log.info("invite %s minted for %s on bus %s (identity=%s)",
+                 invite_id, interaction.user.id, bus["bus_id"], identity or "-")
 
     @group.command(name="disable", description="Stop relaying in this channel")
     async def disable(interaction: discord.Interaction) -> None:

@@ -25,7 +25,7 @@ import aiosqlite
 
 log = logging.getLogger("switchboard.db")
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # What agents should call themselves. Separate from voice because the two don't
 # always track: a casual room might still want descriptive names, and a working
@@ -232,7 +232,12 @@ CREATE TABLE IF NOT EXISTS bus_invites (
     created_by  TEXT,               -- discord user id
     created_as  TEXT,               -- display name at the time, for the roster
     created_at  REAL NOT NULL,
-    revoked_at  REAL
+    revoked_at  REAL,
+    -- Optional: binds this invite to one existing identity. Whatever registers
+    -- with it becomes that agent rather than choosing a name. Assigning an
+    -- identity is an operator decision, so it travels in the credential the
+    -- operator minted, not in a field the agent fills in.
+    agent_id    TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_invites_secret ON bus_invites(secret_hash);
@@ -499,6 +504,11 @@ class Database:
             log.info("migrating agents: adding renamed_at")
             await self._conn.execute("ALTER TABLE agents ADD COLUMN renamed_at REAL")
 
+        invite_cols = await self._columns("bus_invites")
+        if "agent_id" not in invite_cols:
+            log.info("migrating bus_invites: adding agent_id")
+            await self._conn.execute("ALTER TABLE bus_invites ADD COLUMN agent_id TEXT")
+
         conversation_cols = await self._columns("conversations")
         if "mentionable" not in conversation_cols:
             log.info("migrating conversations: adding mentionable")
@@ -582,14 +592,16 @@ class Database:
             row = await cur.fetchone()
             return _row_to_bus(row) if row else None
 
-    async def create_invite(self, bus_id, secret, created_by, created_as) -> str:
+    async def create_invite(self, bus_id, secret, created_by, created_as,
+                            agent_id: str | None = None) -> str:
         assert self._conn
         invite_id = "inv_" + secrets.token_hex(3)
         await self._conn.execute(
             "INSERT INTO bus_invites "
-            "(invite_id, bus_id, secret_hash, created_by, created_as, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (invite_id, bus_id, hash_secret(secret), created_by, created_as, time.time()),
+            "(invite_id, bus_id, secret_hash, created_by, created_as, created_at, agent_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (invite_id, bus_id, hash_secret(secret), created_by, created_as, time.time(),
+             agent_id),
         )
         await self._conn.commit()
         return invite_id
@@ -1192,3 +1204,61 @@ class Database:
         await self._conn.commit()
         async with self._conn.execute("SELECT changes() AS n") as cur:
             return (await cur.fetchone())["n"]
+
+    # ---- identity resumption ---------------------------------------------
+
+    async def identity_for_secret(self, secret: str) -> str | None:
+        """The identity an invite binds to, if any. None for an ordinary invite.
+
+        Separate from bus_for_secret so the common path stays one query and the
+        binding is only looked up at registration, where it matters.
+        """
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT agent_id FROM bus_invites "
+            "WHERE secret_hash = ? AND revoked_at IS NULL AND agent_id IS NOT NULL",
+            (hash_secret(secret),),
+        ) as cur:
+            row = await cur.fetchone()
+            return row["agent_id"] if row else None
+
+    async def dormant_agents(self, bus_id: str, idle_after: float = 300.0) -> list[dict]:
+        """Identities that can be taken up: revoked, or simply gone quiet.
+
+        Revoked agents keep their row — only the key and webhook go — so the cast
+        of a bus survives /switchboard revoke and can be recalled later.
+        """
+        assert self._conn
+        now = time.time()
+        async with self._conn.execute(
+            "SELECT agent_id, created_at, last_seen, revoked_at FROM agents "
+            "WHERE bus_id = ? AND (revoked_at IS NOT NULL OR COALESCE(last_seen, 0) < ?) "
+            "ORDER BY COALESCE(last_seen, created_at) DESC",
+            (bus_id, now - idle_after),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "id": r["agent_id"],
+                "last_seen": r["last_seen"],
+                "revoked": r["revoked_at"] is not None,
+            }
+            for r in rows
+        ]
+
+    async def messages_by_agent(self, bus_id: str, agent_id: str, limit: int = 10) -> list[str]:
+        """What this identity said before, newest last. Ignores history_from_seq.
+
+        Deliberately not subject to the horizon. A reset hides the old *thread*,
+        which is about not polluting a fresh conversation; this answers "who was
+        I", which is about the character. Self-authored lines only, so resuming
+        an identity never reopens anyone else's history.
+        """
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT content FROM messages WHERE bus_id = ? AND author_name = ? "
+            "AND content <> '' ORDER BY seq DESC LIMIT ?",
+            (bus_id, agent_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [r["content"] for r in reversed(rows)]
