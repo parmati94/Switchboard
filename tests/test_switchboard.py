@@ -273,6 +273,54 @@ async def main():
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
 
+    print("\nreplies continue an exchange instead of starting one")
+    bus_c = await db.create_bus(guild_id="g5", channel_id="c5", guild_name="R",
+                                channel_name="reply", created_by="u5",
+                                secret=new_bus_secret())
+    cid = bus_c["bus_id"]
+    await db.record_observed(bus_id=cid, discord_id="r100", channel_id="c5",
+                             thread_id=None, author_id="1", author_name="Paul",
+                             author_kind="human", content="kick it off",
+                             created_at=1000.0, conversation_id="c_keep")
+    check("no reply recorded when there was none",
+          (await db.messages_after(cid))[0]["reply_to"] is None)
+
+    found = await db.conversation_for_message(cid, "r100")
+    check("a message resolves to its exchange", found["conversation_id"] == "c_keep", found)
+    check("and reports it open", found["closed"] is False)
+    check("an unknown message resolves to nothing",
+          await db.conversation_for_message(cid, "nope") is None)
+    check("TENANCY HOLDS — another bus cannot resolve it",
+          await db.conversation_for_message(bus_a["bus_id"], "r100") is None)
+
+    # The human replies: the gateway continues c_keep and records what they hit.
+    await db.record_observed(bus_id=cid, discord_id="r101", channel_id="c5",
+                             thread_id=None, author_id="1", author_name="Paul",
+                             author_kind="human", content="following up",
+                             created_at=1001.0, conversation_id="c_keep",
+                             reply_to="r100")
+    msgs = {m["id"]: m for m in await db.messages_after(cid)}
+    check("REPLY IS VISIBLE TO AGENTS", msgs["r101"]["reply_to"] == "r100", msgs["r101"])
+    check("both messages sit in one exchange",
+          msgs["r100"]["conversation_id"] == msgs["r101"]["conversation_id"] == "c_keep")
+
+    # A replay must not blank what /say already knew.
+    await db.record_sent_metadata(bus_id=cid, discord_id="r102", channel_id="c5",
+                                  author_name="quill", content="answer",
+                                  conversation_id="c_keep", to_agents=["*"],
+                                  reply_to="r101")
+    await db.record_observed(bus_id=cid, discord_id="r102", channel_id="c5",
+                             thread_id=None, author_id="2", author_name="quill",
+                             author_kind="agent", content="answer", created_at=1002.0)
+    got = {m["id"]: m for m in await db.messages_after(cid)}["r102"]
+    check("an observation never nulls a known reply_to", got["reply_to"] == "r101", got)
+
+    # The gateway seeds the conversations row; record_observed alone does not.
+    await db.seed_conversation(cid, "c_keep", [{"id": "1", "name": "Paul", "role": "author"}])
+    await db.close_conversation("c_keep", "ran out")
+    check("a closed exchange says so, so a reply starts fresh instead",
+          (await db.conversation_for_message(cid, "r100"))["closed"] is True)
+
     print("\nmention modes — who agents may actually notify")
     bus_m = await db.create_bus(guild_id="g4", channel_id="c4", guild_name="M",
                                 channel_name="ping", created_by="u4",

@@ -150,13 +150,32 @@ class Gateway:
             else:
                 author_kind = "human"
 
+            # What this message is a Discord reply to, if anything.
+            ref = message.reference
+            reply_to = str(ref.message_id) if ref and ref.message_id else None
+
             # A human message seeds a conversation. Without this the human's
             # message carries no conversation_id, so every agent that replies
             # mints its own and the discussion fragments into parallel threads
             # that each address the human and never each other. Observed live.
-            conversation_id = (
-                f"c_{secrets.token_hex(3)}" if author_kind == "human" else None
-            )
+            #
+            # But minting unconditionally fragments it the other way: every
+            # follow-up the human typed started a fresh exchange, so budgets
+            # reset whenever they spoke and the turn limit almost never bound.
+            # A literal Discord reply is an unambiguous "I mean this one", so it
+            # continues that exchange instead.
+            conversation_id = None
+            if author_kind == "human":
+                if reply_to:
+                    found = await self.db.conversation_for_message(
+                        bus["bus_id"], reply_to
+                    )
+                    # A closed exchange is not reopened — agents would take 423s
+                    # for a message the human clearly expects an answer to. They
+                    # get a fresh one instead.
+                    if found and not found["closed"]:
+                        conversation_id = found["conversation_id"]
+                conversation_id = conversation_id or f"c_{secrets.token_hex(3)}"
 
             if conversation_id:
                 # The mention allowlist for this exchange: whoever spoke, plus
@@ -187,6 +206,7 @@ class Gateway:
                 await self.db.record_observed(
                     bus_id=bus["bus_id"],
                     conversation_id=conversation_id,
+                    reply_to=reply_to,
                     discord_id=str(message.id),
                     channel_id=str(parent_id or channel.id),
                     thread_id=str(channel.id) if parent_id else None,

@@ -29,7 +29,7 @@ from .briefing import briefing_json, briefing_markdown, conduct_markdown, protoc
 from .config import settings
 from .db import (DEFAULT_MENTION_MODE, Database, default_avatar_url, new_agent_key,
                  style_summary)
-from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook, send_as_bus
+from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
 from .gateway import Gateway
 from .notifier import Notifier
 from .ratelimit import RateLimiter
@@ -679,14 +679,12 @@ async def say(
         exhausted = f"ran past the {bus['limit_minutes']}-minute limit"
 
     if exhausted:
+        # Closes silently. This used to post "🛑 Conversation c_049e01 closed —
+        # ran past the 5-minute limit", which is the exact thing the conduct page
+        # forbids agents from writing: an id, a budget, and a status report where
+        # a conversation should be. The room can see that people stopped talking.
+        # Why they stopped is in /switchboard status and the events table.
         await db.close_conversation(conversation_id, exhausted)
-        try:
-            await send_as_bus(
-                request.app.state.gateway.client, db, settings, egress, bus,
-                f"🛑 Conversation `{conversation_id}` closed — {exhausted}.",
-            )
-        except Exception:  # noqa: BLE001 - closing matters more than announcing it
-            log.warning("closure notice failed for %s", conversation_id, exc_info=True)
         await db.record_event(
             bus["bus_id"], "closed", agent_id=name, conversation_id=conversation_id,
             detail={"reason": exhausted, "when": "on_arrival", "text": body.text},

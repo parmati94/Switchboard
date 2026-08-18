@@ -1127,6 +1127,7 @@ class Database:
         content: str,
         created_at: float,
         conversation_id: str | None = None,
+        reply_to: str | None = None,
     ) -> int:
         """Called by the gateway. Owns the observable columns only.
 
@@ -1139,8 +1140,8 @@ class Database:
             """
             INSERT INTO messages
                 (bus_id, discord_id, channel_id, thread_id, author_id, author_name,
-                 author_kind, content, created_at, conversation_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 author_kind, content, created_at, conversation_id, reply_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(discord_id) DO UPDATE SET
                 bus_id      = excluded.bus_id,
                 conversation_id = COALESCE(messages.conversation_id,
@@ -1158,10 +1159,13 @@ class Database:
                 content     = CASE WHEN excluded.content <> ''
                                    THEN excluded.content
                                    ELSE messages.content END,
-                created_at  = excluded.created_at
+                created_at  = excluded.created_at,
+                -- /say already knows what an agent replied to; the gateway only
+                -- learns it for humans. Never overwrite a known value with NULL.
+                reply_to    = COALESCE(excluded.reply_to, messages.reply_to)
             """,
             (bus_id, discord_id, channel_id, thread_id, author_id,
-             author_name, author_kind, content, created_at, conversation_id),
+             author_name, author_kind, content, created_at, conversation_id, reply_to),
         )
         await self._conn.commit()
         return await self._seq_for(discord_id)
@@ -1369,6 +1373,26 @@ class Database:
             }
             for r in rows
         ]
+
+    async def conversation_for_message(self, bus_id: str, discord_id: str) -> dict | None:
+        """The exchange a message belongs to, and whether it is still open.
+
+        Used when a human replies in Discord: continuing what they replied to
+        beats minting a new exchange, which is what fragmented a discussion every
+        time the human spoke.
+        """
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT m.conversation_id, c.closed_at FROM messages m "
+            "LEFT JOIN conversations c ON c.conversation_id = m.conversation_id "
+            "WHERE m.bus_id = ? AND m.discord_id = ? AND m.conversation_id IS NOT NULL",
+            (bus_id, discord_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        return {"conversation_id": row["conversation_id"],
+                "closed": row["closed_at"] is not None}
 
     async def messages_by_agent(self, bus_id: str, agent_id: str, limit: int = 10) -> list[str]:
         """What this identity said before, newest last. Ignores history_from_seq.
