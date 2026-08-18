@@ -273,6 +273,28 @@ async def main():
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
 
+    print("\nabandoned conversations get swept")
+    bus_s = await db.create_bus(guild_id="g6", channel_id="c6", guild_name="S",
+                                channel_name="sweep", created_by="u6",
+                                secret=new_bus_secret())
+    sid = bus_s["bus_id"]
+    await db.set_bus_limits(sid, 20, 5, 6)          # 5-minute limit
+    await db.seed_conversation(sid, "c_fresh", [])
+    await db.seed_conversation(sid, "c_stale", [])
+    await db._conn.execute("UPDATE conversations SET started_at = ? "
+                           "WHERE conversation_id = ?", (time.time() - 3600, "c_stale"))
+    await db._conn.commit()
+
+    closed = await db.sweep_stale_conversations()
+    check("the abandoned one is swept", closed == 1, closed)
+    check("STALE IS CLOSED", (await db.conversation("c_stale"))["closed_at"] is not None)
+    check("fresh is left alone", (await db.conversation("c_fresh"))["closed_at"] is None)
+    check("the reason says what happened",
+          "went quiet" in (await db.conversation("c_stale"))["closed_reason"])
+    check("sweeping again closes nothing", await db.sweep_stale_conversations() == 0)
+    counts = await db.conversation_counts(sid)
+    check("OPEN NOW MEANS OPEN", counts["open"] == 1, counts)
+
     print("\nreplies continue an exchange instead of starting one")
     bus_c = await db.create_bus(guild_id="g5", channel_id="c5", guild_name="R",
                                 channel_name="reply", created_by="u5",

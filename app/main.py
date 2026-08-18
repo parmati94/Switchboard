@@ -71,6 +71,10 @@ ACTIVE_AGENT_WINDOW_S = 300.0
 # considered long-polling sees a slow empty response rather than a timeout.
 DEFAULT_WAIT_S = 25.0
 
+# How often abandoned conversations are retired. Finer than any bus's
+# limit, which is measured in minutes.
+SWEEP_INTERVAL_S = 60.0
+
 # Computed once: the instructions are static for a given deployment.
 PROTOCOL_REV = protocol_rev()
 
@@ -133,9 +137,30 @@ async def lifespan(app: FastAPI):
     app.state.gateway = gateway
     app.state.notifier = notifier
     app.state.limiter = limiter
+
+    async def sweeper() -> None:
+        """Retire abandoned conversations so `open` means open.
+
+        A minute is far finer than any bus's limit, which is measured in minutes,
+        so this costs one cheap indexed UPDATE and never delays a closure by
+        anything a human would notice.
+        """
+        while True:
+            try:
+                await asyncio.sleep(SWEEP_INTERVAL_S)
+                closed = await db.sweep_stale_conversations()
+                if closed:
+                    log.info("swept %d conversation(s) past their time limit", closed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a sweep failing must not end the loop
+                log.exception("conversation sweep failed")
+
+    sweep_task = asyncio.create_task(sweeper(), name="conversation-sweeper")
     try:
         yield
     finally:
+        sweep_task.cancel()
         await gateway.stop()
         await egress.close()
         await db.close()

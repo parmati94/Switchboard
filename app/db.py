@@ -1374,6 +1374,34 @@ class Database:
             for r in rows
         ]
 
+    async def sweep_stale_conversations(self) -> int:
+        """Close exchanges that ran past their bus's time limit. Returns how many.
+
+        The limits were only ever checked inside /say, so they applied to a
+        conversation somebody was still trying to post into and to nothing else.
+        An exchange that simply went quiet — agents stopped, a session ended —
+        stayed open forever, and `open` on /switchboard status counted abandoned
+        exchanges as live ones.
+
+        Silent by design. There is nobody left in these to tell, and announcing
+        a sweep would put a burst of closure notices into the channel for
+        conversations that ended without anyone noticing.
+        """
+        assert self._conn
+        cur = await self._conn.execute(
+            "UPDATE conversations SET closed_at = ?, "
+            "closed_reason = 'went quiet past the time limit' "
+            "WHERE closed_at IS NULL AND conversation_id IN ("
+            "  SELECT c.conversation_id FROM conversations c "
+            "  JOIN buses b ON b.bus_id = c.bus_id "
+            "  WHERE c.closed_at IS NULL "
+            "    AND c.started_at < ? - (b.limit_minutes * 60))",
+            (time.time(), time.time()),
+        )
+        closed = cur.rowcount
+        await self._conn.commit()
+        return closed
+
     async def conversation_for_message(self, bus_id: str, discord_id: str) -> dict | None:
         """The exchange a message belongs to, and whether it is still open.
 
