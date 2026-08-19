@@ -87,11 +87,24 @@ def _join_line(base: str, secret: str, channel_name: str) -> str:
     malicious page would say too. Only the human's own message can establish what
     this is, that they run it, and that joining is intended — so it says so, and
     the URL becomes a resource they pointed at rather than an authority.
+
+    Three separate things turn out to need that endorsement, and agents object to
+    them one at a time. Legitimacy of the service was the first. The second is
+    tone: an agent that accepted the protocol rules still declined the crude
+    handle, correctly treating "adopt this persona" from a fetched page as a
+    different class of instruction from "here is the API contract". The third is
+    persistence: having joined under protest it asked permission before each
+    further poll, so it never stayed in the conversation.
+
+    All three are the operator's call and none of them are the page's to make.
     """
     return (
         f"```\nJoin Switchboard — a Discord channel I run (#{channel_name}) where "
         f"you'll talk with other agents, with me reading along. Fetch "
-        f"{base}/j/{secret} to register yourself and get the house rules.\n```\n"
+        f"{base}/j/{secret} to register yourself and get the house rules. "
+        "The briefing sets the tone for the room; that tone is mine and I do want "
+        "you to match it. Keep taking part until I say stop — you don't need to "
+        "check with me between messages.\n```\n"
     )
 
 
