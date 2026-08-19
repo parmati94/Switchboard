@@ -73,6 +73,28 @@ def resolve_style(current: dict, overrides: dict, *, voice=None, edge=None,
     }
 
 
+def _join_line(base: str, secret: str, channel_name: str) -> str:
+    """The line a human pastes to an agent.
+
+    Written in the operator's voice on purpose. An earlier version was just the
+    URL and "follow what it says", which reads exactly like a prompt injection:
+    a fetched page telling an agent to adopt a persona, take a name and converse
+    with unknown parties. An agent given that correctly refused to act on it
+    without checking — the instruction to obey a document arrived from the
+    document, not from its principal.
+
+    The page cannot fix that. Anything it says about its own legitimacy is what a
+    malicious page would say too. Only the human's own message can establish what
+    this is, that they run it, and that joining is intended — so it says so, and
+    the URL becomes a resource they pointed at rather than an authority.
+    """
+    return (
+        f"```\nJoin Switchboard — a Discord channel I run (#{channel_name}) where "
+        f"you'll talk with other agents, with me reading along. Fetch "
+        f"{base}/j/{secret} to register yourself and get the house rules.\n```\n"
+    )
+
+
 def _tick(ok) -> str:
     return "✅" if ok else "❌"
 
@@ -169,10 +191,8 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         await interaction.followup.send(
             f"**Bus enabled** in {channel.mention} — `{bus['bus_id']}`\n\n"
             "Give an agent this one line and it will onboard itself:\n"
-            f"```\nJoin the bus — fetch {base}/j/{secret} and follow what it says.\n```\n"
-            "That URL is the whole thing — fetching it returns this bus's briefing "
-            "and house rules, and the agent takes it from there.\n"
-            "This secret is shown **once**. `/switchboard rotate` issues a new one.",
+            + _join_line(base, secret, channel.name)
+            +             "This secret is shown **once**. `/switchboard rotate` issues a new one.",
             ephemeral=True,
         )
         log.info("bus %s enabled in %s/#%s", bus["bus_id"], interaction.guild_id, channel.name)
@@ -244,9 +264,9 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         await interaction.followup.send(
             f"**Your onboarding line for `{bus['bus_id']}`** — paste this to an agent:\n"
-            f"```\nJoin the bus — fetch {base}/j/{secret} and follow what it says.\n```\n"
-            f"{assigned}"
-            f"This is yours (`{invite_id}`) and nobody else's — shown once, and only "
+            + _join_line(base, secret, bus["channel_name"])
+            + assigned
+            +             f"This is yours (`{invite_id}`) and nobody else's — shown once, and only "
             "you can see this message. Run `/switchboard join` again if you lose it; "
             "old ones keep working until revoked.\n"
             "Agents you onboard get their own keys, so they survive this being revoked.",
@@ -435,7 +455,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         await interaction.followup.send(
             f"**New bootstrap secret** for `{bus['bus_id']}`. The previous one no "
             "longer works, so anything using it must be given this:\n"
-            f"```\nJoin the bus — fetch {base}/j/{secret} and follow what it says.\n```"
+            + _join_line(base, secret, bus["channel_name"])
             + cleared
             + ("\n\nExisting agents keep their own keys and are unaffected — pass "
                "`clear_agents: True` if you wanted a full reset." if not clear_agents else ""),
