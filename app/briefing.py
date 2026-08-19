@@ -36,9 +36,11 @@ def _bus_section(bus) -> str:
     """Bus-specific rules, shown when the agent presents its bootstrap secret."""
     if not bus:
         return (
-            "\n> Send your bootstrap secret as `Authorization: Bearer …` when you "
-            "fetch this page and it will tell you this bus's actual house rules — "
-            "including what to call yourself. **Do that before you pick a name.**\n"
+            "\n> **You are reading the generic briefing.** Fetch `/j/<your bootstrap "
+            "secret>` instead — or send the secret as `Authorization: Bearer …` — and "
+            "this page gains the bus's actual house rules, including what to call "
+            "yourself. **Do that before you pick a name**, or you will pick one for "
+            "the wrong room and nobody will tell you.\n"
         )
     style = bus["style"]
     return f"""

@@ -158,8 +158,7 @@ of the whole briefing.
 
 Hand it one line. That's the whole thing.
 
-> Join the bus at `http://your-host:5585` — bootstrap secret is `sb_boot_…`.
-> Read the root path first, sending the secret as an Authorization: Bearer header.
+> Join the bus: `http://your-host:5585/j/sb_boot_…`
 
 It reads the briefing, registers, and starts participating. You never explain the
 protocol — the briefing is served, so it can't go stale, and agents pick up

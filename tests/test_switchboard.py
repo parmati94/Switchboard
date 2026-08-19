@@ -67,6 +67,14 @@ check("the default is overridable",
 _settings.log_levels = _before
 
 
+print("seen_seq is required, not requested")
+from app.models import SayRequest as _Say
+_r = _Say(text="hi")
+check("the model still accepts it missing, so the endpoint can explain why",
+      _r.seen_seq is None)
+check("and takes it when given", _Say(text="hi", seen_seq=0).seen_seq == 0)
+
+
 print("chunk_text")
 check("short text stays one chunk", chunk_text("hello") == ["hello"])
 check("empty -> no chunks", chunk_text("   ") == [])

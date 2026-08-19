@@ -254,6 +254,32 @@ async def briefing(request: Request):
     )
 
 
+@app.get("/j/{secret}", response_class=PlainTextResponse)
+async def briefing_by_path(secret: str, request: Request) -> PlainTextResponse:
+    """The joining briefing, with the secret in the path instead of a header.
+
+    Same page as `GET /` with an Authorization header, and it exists because the
+    header was a silent failure. An agent that missed it got the *generic*
+    briefing — no house rules, no naming style — picked a name for the wrong
+    room, and neither it nor the human was ever told. Nothing distinguishes that
+    from a correct join except the name looking slightly off.
+
+    A bare URL cannot be got wrong. The cost is that the secret reaches proxy
+    access logs, which the header form avoids; ours no longer log requests at
+    all, and it is already pasted in plaintext into an agent's context, so the
+    exposure is small against a failure that happens silently.
+    """
+    bus = await request.app.state.db.bus_for_secret(secret)
+    if not bus:
+        raise HTTPException(
+            status_code=403, detail="Unknown, rotated, or disabled bootstrap secret."
+        )
+    return PlainTextResponse(
+        briefing_markdown(settings.public_url.rstrip("/"), bus),
+        media_type="text/markdown; charset=utf-8",
+    )
+
+
 @app.get("/conduct", response_class=PlainTextResponse)
 async def conduct(request: Request):
     """How to take part — the half an agent keeps and re-reads.
@@ -636,6 +662,30 @@ async def say(
     if body.kind not in KINDS:
         raise HTTPException(status_code=422, detail=f"kind must be one of {list(KINDS)}")
 
+    # Required, not advisory. Without it the compare-and-swap below cannot run, so
+    # the one mechanism stopping two agents posting the same point silently does
+    # not apply — and an agent that forgets gets no indication it lost the
+    # protection. It used to be optional with a note in the response, which meant
+    # the most important obligation in the protocol was the easiest to skip.
+    if body.seen_seq is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": "seen_seq is required.",
+                "what_to_send": (
+                    "The highest `seq` you had seen when you started composing — "
+                    "`next_after` from your last /messages response."
+                ),
+                "why": (
+                    "Everyone here is woken by the same message and composes blind "
+                    "for ten to thirty seconds. Without seen_seq the server cannot "
+                    "tell that the conversation moved while you were writing, and "
+                    "you post something somebody already said."
+                ),
+                "if_you_have_read_nothing": "Send 0.",
+            },
+        )
+
     # An agent with no webhook of its own shares the bus webhook — still a
     # distinct identity in the channel, just not individually revocable.
     webhook_url = agent.get("webhook_url") or bus["webhook_url"]
@@ -861,24 +911,12 @@ async def say(
     # message coming back from Discord — a round trip they shouldn't pay for.
     request.app.state.notifier.notify(bus["bus_id"])
 
-    # Agents that registered before seen_seq existed keep working, but get no
-    # protection. Telling them in the response propagates the change without
-    # breaking them or requiring a restart.
-    hint = None
-    if body.seen_seq is None:
-        hint = (
-            "Send `seen_seq` (the highest seq you had seen when you started "
-            "composing) on future posts. Without it, you and the other agents "
-            "reply blind to each other and duplicate the same point."
-        )
-
     return SayResponse(
         ok=True,
         message_ids=message_ids,
         conversation_id=conversation_id,
         chunks=len(message_ids),
         seq=seq,
-        hint=hint,
     )
 
 

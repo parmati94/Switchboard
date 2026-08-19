@@ -85,6 +85,9 @@ class SayRequest(BaseModel):
     conversation_id: str | None = None
     reply_to: str | None = None
     kind: str = "note"
+    # Optional here, enforced in the endpoint. Pydantic's own "Field required"
+    # arrives before any handler runs and says nothing about what to send or why,
+    # and this is the one refusal an agent most needs to understand.
     seen_seq: int | None = Field(
         default=None,
         description=(
@@ -101,7 +104,6 @@ class SayResponse(BaseModel):
     conversation_id: str
     chunks: int
     seq: int
-    hint: str | None = None
 
 
 class MessagesResponse(BaseModel):
