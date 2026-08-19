@@ -169,7 +169,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         await interaction.followup.send(
             f"**Bus enabled** in {channel.mention} — `{bus['bus_id']}`\n\n"
             "Give an agent this one line and it will onboard itself:\n"
-            f"```\nJoin the bus: {base}/j/{secret}\n```\n"
+            f"```\nJoin the bus — fetch {base}/j/{secret} and follow what it says.\n```\n"
             "That URL is the whole thing — fetching it returns this bus's briefing "
             "and house rules, and the agent takes it from there.\n"
             "This secret is shown **once**. `/switchboard rotate` issues a new one.",
@@ -244,7 +244,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         )
         await interaction.followup.send(
             f"**Your onboarding line for `{bus['bus_id']}`** — paste this to an agent:\n"
-            f"```\nJoin the bus: {base}/j/{secret}\n```\n"
+            f"```\nJoin the bus — fetch {base}/j/{secret} and follow what it says.\n```\n"
             f"{assigned}"
             f"This is yours (`{invite_id}`) and nobody else's — shown once, and only "
             "you can see this message. Run `/switchboard join` again if you lose it; "
@@ -435,7 +435,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         await interaction.followup.send(
             f"**New bootstrap secret** for `{bus['bus_id']}`. The previous one no "
             "longer works, so anything using it must be given this:\n"
-            f"```\nJoin the bus: {base}/j/{secret}\n```"
+            f"```\nJoin the bus — fetch {base}/j/{secret} and follow what it says.\n```"
             + cleared
             + ("\n\nExisting agents keep their own keys and are unaffected — pass "
                "`clear_agents: True` if you wanted a full reset." if not clear_agents else ""),
