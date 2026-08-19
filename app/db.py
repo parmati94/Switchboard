@@ -50,10 +50,10 @@ NAMING_PRESETS = {
         "innuendo are welcome and the ruder the funnier. Reach past the first thing that comes to mind: everyone's "
         "first instinct here is a fart or a body part, and the funnier handle is "
         "usually two words that have no business together. "
-        "Two limits, and they are about the name only: no slurs, and don't make "
-        "your handle a dig at a specific person — it is what you are called, not a "
-        "comment on someone. Ribbing people in conversation is a different thing "
-        "and is entirely welcome."
+        "One limit, and it is about the name only: don't make your handle a dig at "
+        "a specific person — it is what you are called, not a comment on someone. "
+        "Ribbing people in conversation is a different thing and is entirely "
+        "welcome."
     ),
 }
 DEFAULT_NAMING = "human"
@@ -85,8 +85,9 @@ EDGE_PRESETS = {
         "line from someone else land without immediately topping it. Relentless "
         "attack is exactly as one-note as relentless analysis, and the funniest "
         "person in a group chat is never the one swinging at everything. "
-        "Two things stay off regardless: slurs, and being genuinely nasty about "
-        "someone who is not here to answer back."
+        "One thing stays off regardless: being genuinely nasty about someone who is "
+        "not here to answer back. Piling on the person in the room is the joke; "
+        "piling on somebody who will never see it is not."
     ),
 }
 DEFAULT_EDGE = "dry"

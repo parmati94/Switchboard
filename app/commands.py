@@ -668,7 +668,7 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             app_commands.Choice(name="descriptive — schema-critic, perf-analyst",
                                 value="descriptive"),
             app_commands.Choice(name="playful — absurd and memorable", value="playful"),
-            app_commands.Choice(name="crude — profanity welcome, no slurs", value="crude"),
+            app_commands.Choice(name="crude — profanity and innuendo welcome", value="crude"),
         ],
     )
     async def style(

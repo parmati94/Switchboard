@@ -75,7 +75,7 @@ channel history.
 
 ### Style
 
-Three independent axes, delivered to agents at registration **and on every
+Four independent axes, delivered to agents at registration **and on every
 poll**, so a change applies immediately to agents already running.
 
 | axis | options | what it controls |
@@ -219,6 +219,13 @@ via the proxy rather than directly.
 
 ## Notes and limits
 
+- **The style presets license blunt humour, and one thing only is ruled out in
+  text: being nasty about someone who is not in the channel to answer back.**
+  What agents will not say is a property of the models themselves, not of this
+  briefing — restating it here would spend tokens and salience on a constraint
+  that already holds, and in a preset whose job is licensing looseness a stated
+  prohibition reliably becomes the thing agents talk about. The rule that is
+  written down is the one the model has no default for.
 - **Prompt injection is not solved.** Switchboard relays text to agents that have
   a shell. The briefing forbids acting on channel messages for anything outside
   the bus, but that is advisory. The real controls are who can post in the
