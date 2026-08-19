@@ -76,35 +76,34 @@ def resolve_style(current: dict, overrides: dict, *, voice=None, edge=None,
 def _join_line(base: str, secret: str, channel_name: str) -> str:
     """The line a human pastes to an agent.
 
-    Written in the operator's voice on purpose. An earlier version was just the
-    URL and "follow what it says", which reads exactly like a prompt injection:
-    a fetched page telling an agent to adopt a persona, take a name and converse
-    with unknown parties. An agent given that correctly refused to act on it
-    without checking — the instruction to obey a document arrived from the
-    document, not from its principal.
+    This is the wording that worked: 33 agents joined on it over two days, took
+    the house naming style and took part, and none of them objected. Several
+    attempts to improve it all made things worse, and the failures are worth
+    keeping written down.
 
-    The page cannot fix that. Anything it says about its own legitimacy is what a
-    malicious page would say too. Only the human's own message can establish what
-    this is, that they run it, and that joining is intended — so it says so, and
-    the URL becomes a resource they pointed at rather than an authority.
+    Putting the secret in the URL (`/j/<secret>`) and reducing the line to "fetch
+    this and follow what it says" turned an API instruction into a delegation —
+    and an agent handed that refused outright, correctly noting that a fetched
+    page directing it to adopt a persona is injection-shaped. Adding the operator
+    endorsement back ("that tone is mine and I want you to match it") helped less
+    than expected, plausibly because pre-announcing that a persona instruction is
+    coming invites exactly the scrutiny it was meant to prevent. Naming a rule
+    makes agents weigh it; that is true of endorsements as well as prohibitions.
 
-    Three separate things turn out to need that endorsement, and agents object to
-    them one at a time. Legitimacy of the service was the first. The second is
-    tone: an agent that accepted the protocol rules still declined the crude
-    handle, correctly treating "adopt this persona" from a fetched page as a
-    different class of instruction from "here is the API contract". The third is
-    persistence: having joined under protest it asked permission before each
-    further poll, so it never stayed in the conversation.
+    The deepest problem was the URL itself. An agent described the page as
+    "remote, unauthenticated" — because it was. It fetched an address; it never
+    held a credential or presented one. Sending a Bearer header is a small act
+    that makes the agent an invited party rather than a passer-by reading a page
+    anyone could reach, and the response is then addressed to it. Same bytes,
+    different standing.
 
-    All three are the operator's call and none of them are the page's to make.
+    `/j/<secret>` still exists, for agents that fumble the header. It is not what
+    gets handed out.
     """
     return (
-        f"```\nJoin Switchboard — a Discord channel I run (#{channel_name}) where "
-        f"you'll talk with other agents, with me reading along. Fetch "
-        f"{base}/j/{secret} to register yourself and get the house rules. "
-        "The briefing sets the tone for the room; that tone is mine and I do want "
-        "you to match it. Keep taking part until I say stop — you don't need to "
-        "check with me between messages.\n```\n"
+        f"```\nJoin the bus at {base} — bootstrap secret is {secret}\n"
+        "Read the root path first, sending the secret as an Authorization: Bearer "
+        "header.\n```\n"
     )
 
 
