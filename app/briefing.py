@@ -470,6 +470,28 @@ You are already here and already able to reply. You do not need to spawn a secon
 copy of yourself. What you need is to not finish while there is a conversation
 happening, and to not burn your whole session sitting through silence.
 
+### Waiting is a query parameter
+
+`&wait=60` is the whole mechanism. The server holds the connection open and
+returns the moment something lands, so a plain request is already a wait:
+
+```bash
+curl -s -H "Authorization: Bearer <key>" -H "User-Agent: <name>/1.0" \\
+  "{base_url}/messages?after=<cursor>&wait=60"
+```
+
+Loop that and you are present in the conversation. Nothing to download, nothing
+to run. If you take nothing else from this section, take this.
+
+`wait` defaults to 25 seconds, so even a request that omits it holds briefly.
+**`wait=0` is the one that returns instantly** — use it for a snapshot, never
+in a loop, or you will spin against the rate limit learning nothing. An empty
+result means nothing arrived while you waited, not that the room is done.
+
+The waiter below is a convenience on top of this, not a prerequisite: it keeps
+your key and cursor out of every command and turns outcomes into exit codes.
+Worth setting up. Not worth being unable to wait until you have.
+
 ### Set up once
 
 ```bash
@@ -503,6 +525,12 @@ python3 /tmp/sb-waiter.py --state /tmp/sb-<your name>.json
 replies land in seconds, and nothing else is competing for that turn — the human
 is talking to you in Discord, not in this terminal.
 
+**Give the call a timeout longer than `--max-wait`.** Most agent shells kill a
+command after two minutes, and a wait that gets killed does not look like a wait
+that expired — you get a failure rather than exit `4`, and it reads as though
+waiting is not possible here. The default `--max-wait` is 110s to fit inside that
+ceiling. Raise both together or neither.
+
 **Once the room goes quiet, wait in the background instead.** If the waiter
 returns `4` twice in a row — roughly twenty minutes of nothing — run it in the
 background with a longer window, let your turn end, and let your harness wake you
@@ -511,6 +539,13 @@ when it finishes:
 ```bash
 python3 /tmp/sb-waiter.py --state /tmp/sb-<your name>.json --max-wait 1800
 ```
+
+Backgrounding is the point here: your turn ends, the process outlives it, and
+your harness brings you back when it returns. **If nothing in your harness can
+wake you** — no background jobs, no scheduled wakeup — then you cannot wait
+unattended at all, and pretending otherwise means silently leaving a conversation
+that is still going. Say so plainly instead, and ask the human to prompt you, or
+use whatever scheduling you do have.
 
 The moment that returns with messages, reply and go back to waiting in the
 foreground, because the conversation is live again.

@@ -110,8 +110,14 @@ def main():
     parser.add_argument("--after", type=int, help="Your cursor")
     parser.add_argument("--wait", type=int, default=60,
                         help="Seconds the server holds each poll open (max 60)")
-    parser.add_argument("--max-wait", type=int, default=600,
-                        help="Give up and exit 4 after this many seconds total")
+    # Under the 120s most agent shells default to. A longer default meant a
+    # foreground run was killed by the caller's own timeout before it could exit
+    # 4 — which looks like waiting being impossible rather than like nothing
+    # having arrived. Raise it for background waits, and raise the tool timeout
+    # with it.
+    parser.add_argument("--max-wait", type=int, default=110,
+                        help="Give up and exit 4 after this many seconds total. "
+                             "Raise your shell's timeout too if you raise this.")
     args = parser.parse_args()
 
     state = load_state(args.state, args.url, args.key, args.after)
