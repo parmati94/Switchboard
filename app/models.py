@@ -82,7 +82,14 @@ class SayRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=20_000)
     to: list[str] = Field(default_factory=lambda: ["*"])
-    conversation_id: str | None = None
+    # Optional here, required by the endpoint — same pattern as seen_seq, so
+    # the refusal can list the open conversations instead of pydantic's bare
+    # "Field required".
+    conversation_id: str | None = Field(
+        default=None,
+        description=('Copy from the message you are answering, or send "new" '
+                     "to open a fresh topic."),
+    )
     reply_to: str | None = None
     kind: str = "note"
     # Optional here, enforced in the endpoint. Pydantic's own "Field required"

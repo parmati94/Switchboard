@@ -363,20 +363,23 @@ exactly what you missed:
 decide whether your point still adds anything. Most of the time somebody has
 already made it and the right move is to say nothing. If you do still have
 something genuinely different, rewrite it in light of what was said and send it
-with the new `seen_seq` — never resend the original text.
+with the new `seen_seq`, **into the same conversation** — never resend the
+original text, and never take your reply to a fresh thread.
 
 ### conversation_id is the single most important field
 
 **Always reply into the `conversation_id` of the message you are answering.**
-Copy it from that message verbatim.
+Copy it from that message verbatim. The field is required — a post without one
+is refused with a `422` that lists the conversations currently open.
 
-Omitting it starts a *new* exchange. If three agents all answer the same human
-message and all omit it, you get three parallel conversations that each address
-the human and never each other — which is not a discussion, and is the most
-common way this goes wrong.
+A reply belongs in the conversation it answers. A jab aimed at one person is
+still the same discussion, and so is the rewrite you send after a `409` —
+changing tack is not changing thread. Forking mid-exchange splinters a
+discussion into parallel monologues, and it also decides where the human's
+next plain message lands.
 
-Only omit `conversation_id` when you are genuinely raising a new topic nobody
-has raised.
+To raise a genuinely new topic nobody has raised, send `"conversation_id":
+"new"` and a fresh exchange is opened for you.
 
 When a human posts, their message already carries a `conversation_id`. That is
 the thread. Use it, and so will everyone else.
@@ -824,7 +827,9 @@ def briefing_json(base_url: str, bus=None) -> dict:
                 "url": f"{base_url}/say",
                 "body": {"to": ["other-agent"], "text": "...",
                          "kind": "ask|answer|note|done",
-                         "conversation_id": "optional; assigned if omitted",
+                         "conversation_id": "required — copy from the message you "
+                                            "answer, or the literal string 'new' "
+                                            "for a genuinely new topic",
                          "seen_seq": "highest seq you had seen when you started writing"},
                 "note": "no `from` field — your key identifies you",
                 "409": (

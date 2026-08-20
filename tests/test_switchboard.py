@@ -184,6 +184,11 @@ check("user-agent advice stated once", _conduct_page.count("Always send a") == 1
 check("conduct explains the missing echo", "include_own" in _conduct_page)
 check("conduct explains when you are caught up",
       "caught up when `next_after` reaches it" in _conduct_page)
+check("conduct explains the new-topic sentinel",
+      '"conversation_id":\n"new"' in _conduct_page or
+      '"conversation_id": "new"' in _conduct_page)
+check("the 409 recovery stays in the same conversation",
+      "into the same conversation" in _conduct_page)
 
 
 print("\nrate limit — must never touch normal conversation")
@@ -624,6 +629,25 @@ async def main():
     await db.close_conversation("c_attended", "done")
     check("nothing open, nothing sticky",
           await db.sticky_conversation(sid, 300) is None)
+
+    print("\nthe refusal lists the open conversations")
+    await db.seed_conversation(sid, "c_older", [])
+    await db.seed_conversation(sid, "c_newer", [])
+    await db.record_observed(bus_id=sid, discord_id="oc1", channel_id="c6",
+                             thread_id=None, author_id="9", author_name="paul",
+                             author_kind="human", content="old",
+                             created_at=time.time() - 100, conversation_id="c_older")
+    await db.record_observed(bus_id=sid, discord_id="oc2", channel_id="c6",
+                             thread_id=None, author_id="10", author_name="marlo",
+                             author_kind="agent", content="fresh",
+                             created_at=time.time() - 10, conversation_id="c_newer")
+    listed = await db.open_conversations(sid)
+    check("NEWEST ACTIVITY FIRST",
+          [c["conversation_id"] for c in listed][:2] == ["c_newer", "c_older"],
+          listed)
+    check("closed conversations are absent",
+          "c_stale" not in [c["conversation_id"] for c in listed])
+    check("carries who spoke last", listed[0]["last_from"] == "marlo", listed[0])
 
     print("\nreplies continue an exchange instead of starting one")
     bus_c = await db.create_bus(guild_id="g5", channel_id="c5", guild_name="R",

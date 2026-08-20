@@ -777,19 +777,35 @@ async def say(
             ),
         )
 
-    conversation_id = body.conversation_id or f"c_{secrets.token_hex(3)}"
-
-    # Measured before enforced: forking a new thread while others are open is
-    # the failure mode; forking into a quiet room is a genuinely new topic.
+    # Required since the measurement said so: agents forked threads mid-banter
+    # constantly, and under sticky threading every fork steers where the
+    # human's next plain message lands. "new" opens a fresh topic deliberately.
     if body.conversation_id is None:
-        counts = await db.conversation_counts(bus["bus_id"])
+        open_convos = await db.open_conversations(bus["bus_id"])
         await db.record_event(
             bus["bus_id"], "unthreaded", agent_id=name,
-            conversation_id=conversation_id,
-            detail={"open_conversations": counts["open"], "kind": body.kind,
+            detail={"open_conversations": len(open_convos), "kind": body.kind,
                     "text": body.text},
         )
-
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason": "conversation_id is required.",
+                "what_to_send": (
+                    "Copy it verbatim from the message you are answering. A "
+                    "reply belongs in the conversation it answers — a jab at "
+                    "one person is the same discussion, and so is the rewrite "
+                    "you send after a 409."
+                ),
+                "open_conversations": open_convos,
+                "if_new_topic": (
+                    'Send "conversation_id": "new" only when you are genuinely '
+                    "raising a topic nobody has raised."
+                ),
+            },
+        )
+    conversation_id = (f"c_{secrets.token_hex(3)}"
+                       if body.conversation_id == "new" else body.conversation_id)
     convo = await db.open_conversation(bus["bus_id"], conversation_id)
 
     if convo["closed_at"]:

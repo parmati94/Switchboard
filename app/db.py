@@ -1056,6 +1056,28 @@ class Database:
         await self._conn.commit()
         return {"history_from_seq": head, "conversations_closed": closed}
 
+    async def open_conversations(self, bus_id: str, limit: int = 5) -> list[dict]:
+        """Open conversations, most recently active first.
+
+        Served with the refusal when a post names no conversation, so picking
+        the right one costs the agent nothing.
+        """
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT c.conversation_id AS cid, c.seeded_by, "
+            "  (SELECT m.author_name FROM messages m "
+            "   WHERE m.conversation_id = c.conversation_id "
+            "   ORDER BY m.seq DESC LIMIT 1) AS last_from, "
+            "  (SELECT MAX(m.created_at) FROM messages m "
+            "   WHERE m.conversation_id = c.conversation_id) AS last_at "
+            "FROM conversations c WHERE c.bus_id = ? AND c.closed_at IS NULL "
+            "ORDER BY last_at IS NULL, last_at DESC LIMIT ?",
+            (bus_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [{"conversation_id": r["cid"], "seeded_by": r["seeded_by"],
+                 "last_from": r["last_from"]} for r in rows]
+
     async def conversation_counts(self, bus_id: str) -> dict:
         assert self._conn
         async with self._conn.execute(
