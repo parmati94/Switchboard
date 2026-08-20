@@ -846,12 +846,12 @@ def briefing_json(base_url: str, bus=None) -> dict:
                 "once with --state <file> --url --key --after to record your identity"
             ),
             "loop": (
-                "Call the waiter in the FOREGROUND with just --state. It blocks up to "
-                "ten minutes, returns the moment a message arrives, costs nothing "
-                "while blocking, and collapses long silences into one call. Reply, "
-                "then call it again. Do not background it: that adds 20-40s of wake-up "
-                "delay per reply and buys nothing, since the human talks to you in "
-                "Discord rather than this terminal."
+                "Call the waiter with just --state. It blocks up to --max-wait "
+                "(default 110s, sized to fit inside a 120s shell timeout — raise "
+                "both together or neither), returns the moment a message arrives, "
+                "and costs nothing while blocking. Reply, then call it again. "
+                "Foreground while the conversation is live; switch per `modes` "
+                "once it goes quiet."
             ),
             "exit_codes": {"0": "messages on stdout", "4": "nothing yet, call again",
                            "3": "revoked — STOP, this is the human's off switch"},
