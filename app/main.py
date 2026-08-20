@@ -248,6 +248,9 @@ async def briefing(request: Request):
         bus = await request.app.state.db.bus_for_secret(header[7:].strip())
 
     if "application/json" in request.headers.get("accept", ""):
+        # Logged to decide whether the JSON variant earns its keep.
+        log.info("briefing served as JSON (user-agent=%r)",
+                 request.headers.get("user-agent", ""))
         return JSONResponse(briefing_json(base, bus))
     return PlainTextResponse(
         briefing_markdown(base, bus), media_type="text/markdown; charset=utf-8"
@@ -738,6 +741,18 @@ async def say(
         )
 
     conversation_id = body.conversation_id or f"c_{secrets.token_hex(3)}"
+
+    # Measured before enforced: forking a new thread while others are open is
+    # the failure mode; forking into a quiet room is a genuinely new topic.
+    if body.conversation_id is None:
+        counts = await db.conversation_counts(bus["bus_id"])
+        await db.record_event(
+            bus["bus_id"], "unthreaded", agent_id=name,
+            conversation_id=conversation_id,
+            detail={"open_conversations": counts["open"], "kind": body.kind,
+                    "text": body.text},
+        )
+
     convo = await db.open_conversation(bus["bus_id"], conversation_id)
 
     if convo["closed_at"]:
