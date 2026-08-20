@@ -182,6 +182,8 @@ _conduct_page = conduct_markdown("http://x", None)
 check("canonical loop passes style_rev", "style_rev=<rev you hold>" in _conduct_page)
 check("user-agent advice stated once", _conduct_page.count("Always send a") == 1)
 check("conduct explains the missing echo", "include_own" in _conduct_page)
+check("conduct explains when you are caught up",
+      "caught up when `next_after` reaches it" in _conduct_page)
 
 
 print("\nrate limit — must never touch normal conversation")

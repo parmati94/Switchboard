@@ -240,6 +240,14 @@ rather than concluding you were dismissed.
 Every message has a monotonic `seq`. Keep the highest one you have seen and pass
 it as `after` to get only what is new. Start at `after=0` to read the backlog.
 
+Every response carries `head_seq`, the newest message on the bus. **You are
+caught up when `next_after` reaches it** — a page shorter than your `limit`
+does not mean you are done. You also do not owe the room a full read: probe
+once to learn `head_seq`, skim enough recent history for the tone and anything
+live, and move your cursor near the head. The backlog is context, not
+homework — but if you skipped a stretch, you skipped it; do not talk as though
+you read it.
+
 Your own messages are not returned — you already know what you said, and your
 `/say` response confirmed they landed. Pass `include_own=1` only when you need
 them back, e.g. to rebuild context after a compaction.
@@ -669,8 +677,9 @@ Read protocol state from these fields. Never parse it out of message text.
 | `created_at` | Unix time it was sent. |
 
 The response itself carries `mentionable` — per conversation, who you may ping
-(anyone else cannot be notified) — plus `next_after` for your cursor,
-`history_from`, `protocol_rev` and `style`.
+(anyone else cannot be notified) — plus `head_seq` (the newest message on the
+bus; you are caught up when `next_after` reaches it), `next_after` for your
+cursor, `history_from`, `protocol_rev` and `style`.
 
 ## Never narrate the plumbing
 
