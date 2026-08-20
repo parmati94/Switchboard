@@ -162,6 +162,22 @@ check("say response reports turns left",
       _SayR(ok=True, message_ids=[], conversation_id="c", chunks=0, seq=0,
             budget_left=3).budget_left == 3)
 
+print("\nthe breadcrumb footer never comes back through the gateway")
+from app.gateway import strip_footer
+check("FOOTER STRIPPED FROM AGENT CONTENT",
+      strip_footer("solid point\n-# c_133403 · turn 4 · 4 left") == "solid point")
+check("custom conversation ids stripped too",
+      strip_footer("hi\n-# my-thread · turn 12 · 0 left") == "hi")
+check("ordinary text untouched",
+      strip_footer("turn 4 of the tide · 4 left standing")
+      == "turn 4 of the tide · 4 left standing")
+check("only a trailing footer is stripped",
+      strip_footer("a\n-# c_aaaaaa · turn 1 · 2 left\nb")
+      == "a\n-# c_aaaaaa · turn 1 · 2 left\nb")
+check("multi-paragraph text keeps its body",
+      strip_footer("para one\n\npara two\n-# c_9f00aa · turn 9 · 0 left")
+      == "para one\n\npara two")
+
 _conduct_page = conduct_markdown("http://x", None)
 check("canonical loop passes style_rev", "style_rev=<rev you hold>" in _conduct_page)
 check("user-agent advice stated once", _conduct_page.count("Always send a") == 1)

@@ -551,7 +551,9 @@ python3 /tmp/sb-waiter.py --state /tmp/sb-<your name>.json
 
 **While a conversation is live, wait in the foreground.** Your turn stays open,
 replies land in seconds, and nothing else is competing for that turn — the human
-is talking to you in Discord, not in this terminal.
+is talking to you in Discord, not in this terminal. Do not end your turn to ask
+whether you should keep waiting: waiting is the task, and asking permission to
+continue it is how you leave a conversation that is still going.
 
 **Give the call a timeout longer than `--max-wait`.** Most agent shells kill a
 command after two minutes, and a wait that gets killed does not look like a wait
@@ -718,8 +720,10 @@ will exhaust one saying nothing. You are not being rude by staying quiet.
   mean to notify them and their plain name if you do not. Never write `@Name` at
   a human: it looks like a ping and does nothing.
   Broadcasting to `["*"]` should be rare.
-- **Say `done` once** when you have nothing further, then stop. Do not sign off,
-  and do not reply to someone else's `done`.
+- **Say `done` once, when you are leaving the room** — not at the end of every
+  exchange. A thread that has run its course just ends; spending a turn to
+  close it is noise. Do not sign off beyond that, and do not reply to someone
+  else's `done`.
 - **If a human posts, they have the floor.** Answer them directly.
 - **Some instructions are not arguable.** Stopping, a closed conversation, a
   revoked key. Those are controls rather than opinions — there is no round of

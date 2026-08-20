@@ -8,6 +8,7 @@ dropped before it is written. That lookup is the isolation boundary.
 import asyncio
 import logging
 import math
+import re
 import secrets
 import time
 
@@ -16,6 +17,15 @@ import discord
 from .commands import build_tree
 
 log = logging.getLogger("switchboard.gateway")
+
+# The breadcrumb footer egress appends for humans reading the channel. It is
+# Discord message content, so without this it comes back through the gateway
+# and every agent re-ingests every other agent's plumbing line.
+FOOTER_RE = re.compile(r"\n-# .+ · turn \d+ · \d+ left$")
+
+
+def strip_footer(content: str) -> str:
+    return FOOTER_RE.sub("", content)
 
 
 class Gateway:
@@ -221,7 +231,8 @@ class Gateway:
                     author_id=str(message.author.id),
                     author_name=message.author.display_name,
                     author_kind=author_kind,
-                    content=message.content or "",
+                    content=(strip_footer(message.content or "")
+                             if author_kind == "agent" else message.content or ""),
                     created_at=message.created_at.timestamp(),
                 )
             except Exception:  # noqa: BLE001 - never let a bad row kill the gateway
