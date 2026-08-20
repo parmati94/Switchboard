@@ -368,8 +368,10 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         embed.add_field(
             name="Conversations",
             value=(f"**{convos['open']}** open · {convos['total']} total\n"
-                   f"close at {bus['limit_turns']} turns or {bus['limit_minutes']} min\n"
-                   f"-# {bus['limit_agent_turns']} turns if no human started it"),
+                   f"close after {bus['limit_turns']} turns or "
+                   f"{bus['limit_minutes']} min unattended\n"
+                   f"-# {bus['limit_agent_turns']} turns if no human started it · "
+                   f"follow-ups stick {bus['sticky_minutes']} min"),
             inline=True,
         )
         embed.add_field(
@@ -539,15 +541,18 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
 
     @group.command(name="limits", description="Set when conversations end on this bus")
     @app_commands.describe(
-        turns="Agent messages per conversation YOU started (1-200). Bounds cost.",
-        minutes="Wall-clock minutes per conversation (1-240). Rescues a stuck exchange.",
+        turns="Agent turns since your last message (1-200). Bounds unattended cost.",
+        minutes="Minutes without a human message (1-240). Rescues a stuck exchange.",
         agent_turns="Budget for conversations no human started (0-20). Keep this small.",
+        sticky="Minutes a plain (non-reply) message of yours continues the live "
+               "conversation (0-60, 0 = every message starts fresh).",
     )
     async def limits(
         interaction: discord.Interaction,
         turns: app_commands.Range[int, 1, 200],
         minutes: app_commands.Range[int, 1, 240],
         agent_turns: app_commands.Range[int, 0, 20] | None = None,
+        sticky: app_commands.Range[int, 0, 60] | None = None,
     ) -> None:
         await interaction.response.defer(ephemeral=True)
         bus = await db.bus_for_channel(str(interaction.channel_id))
@@ -558,7 +563,9 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         chosen_agent_turns = (
             agent_turns if agent_turns is not None else bus["limit_agent_turns"]
         )
-        await db.set_bus_limits(bus["bus_id"], turns, minutes, chosen_agent_turns)
+        chosen_sticky = sticky if sticky is not None else bus["sticky_minutes"]
+        await db.set_bus_limits(bus["bus_id"], turns, minutes, chosen_agent_turns,
+                                chosen_sticky)
 
         embed = discord.Embed(
             title="Limits updated",
@@ -566,15 +573,22 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
             colour=COLOUR_GREEN,
         )
         embed.add_field(name="You start a topic",
-                        value=f"**{turns}** agent turns\nor **{minutes}** minutes",
+                        value=f"**{turns}** agent turns\nor **{minutes}** minutes\n"
+                              f"-# both since your last message",
                         inline=True)
         embed.add_field(name="Agents start one",
                         value=f"**{chosen_agent_turns}** turns total",
                         inline=True)
+        embed.add_field(name="Follow-ups",
+                        value=(f"plain messages continue the live conversation "
+                               f"for **{chosen_sticky}** min"
+                               if chosen_sticky else
+                               "**off** — every plain message starts fresh"),
+                        inline=True)
         embed.set_footer(
-            text="Your messages never count toward a budget — you are the reset. "
-                 "Conversations nobody started are capped hard so agents cannot "
-                 "chat the room out before you arrive."
+            text="Every message of yours restarts the budgets — they bound how "
+                 "long agents run unattended, not how long you can talk. "
+                 "Replying to a message always targets that conversation."
         )
         await interaction.followup.send(embed=embed, ephemeral=True)
 

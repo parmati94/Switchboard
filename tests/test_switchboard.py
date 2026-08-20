@@ -334,9 +334,19 @@ async def main():
                                  thread_id=None, author_id="1", author_name="x",
                                  author_kind=kind, content="t", created_at=6000.0 + i,
                                  conversation_id="c_lim")
-    check("HUMAN MESSAGES DO NOT CONSUME BUDGET",
-          await db.agent_turns_used(bus_a["bus_id"], "c_lim") == 2,
+    check("BUDGET RESTARTS WHEN A HUMAN SPEAKS",
+          await db.agent_turns_used(bus_a["bus_id"], "c_lim") == 1,
           await db.agent_turns_used(bus_a["bus_id"], "c_lim"))
+    await db.record_observed(bus_id=bus_a["bus_id"], discord_id="53", channel_id="c1",
+                             thread_id=None, author_id="1", author_name="x",
+                             author_kind="agent", content="t", created_at=6003.0,
+                             conversation_id="c_lim")
+    check("and agent turns spend it again",
+          await db.agent_turns_used(bus_a["bus_id"], "c_lim") == 2)
+    check("the clock anchors at the last human message",
+          await db.last_human_message_at(bus_a["bus_id"], "c_lim") == 6001.0)
+    check("no human message -> no anchor",
+          await db.last_human_message_at(bus_a["bus_id"], "c_nothuman") is None)
     await db.close_conversation("c_lim", "reached the 20-turn limit")
     st = await db.conversation("c_lim")
     check("closes with a reason", st["closed_at"] and "20-turn" in st["closed_reason"])
@@ -434,10 +444,11 @@ async def main():
           and b["style_overrides"]["guidance"] == "no jargon", b["style_overrides"])
     check("savage guidance reaches agents", "fair game" in b["style"]["guidance"])
 
-    await db.set_bus_limits(bus_a["bus_id"], 5, 3, 2)
+    await db.set_bus_limits(bus_a["bus_id"], 5, 3, 2, 7)
     b = await db.bus_for_channel("c1")
     check("limits persist", (b["limit_turns"], b["limit_minutes"]) == (5, 3))
     check("banter budget is separate", b["limit_agent_turns"] == 2, b["limit_agent_turns"])
+    check("sticky window persists", b["sticky_minutes"] == 7, b["sticky_minutes"])
 
     print("\navatars — varied, chosen, and stable")
     faces = {n: default_avatar_url(n, "crude") for n in
@@ -548,22 +559,53 @@ async def main():
                                 channel_name="sweep", created_by="u6",
                                 secret=new_bus_secret())
     sid = bus_s["bus_id"]
-    await db.set_bus_limits(sid, 20, 5, 6)          # 5-minute limit
+    await db.set_bus_limits(sid, 20, 5, 6, 5)       # 5-minute limit
     await db.seed_conversation(sid, "c_fresh", [])
     await db.seed_conversation(sid, "c_stale", [])
+    await db.seed_conversation(sid, "c_attended", [])
     await db._conn.execute("UPDATE conversations SET started_at = ? "
-                           "WHERE conversation_id = ?", (time.time() - 3600, "c_stale"))
+                           "WHERE conversation_id IN ('c_stale', 'c_attended')",
+                           (time.time() - 3600,))
     await db._conn.commit()
+    # Old, but a human spoke a minute ago: attended, not stale.
+    await db.record_observed(bus_id=sid, discord_id="sw1", channel_id="c6",
+                             thread_id=None, author_id="9", author_name="paul",
+                             author_kind="human", content="still here",
+                             created_at=time.time() - 60,
+                             conversation_id="c_attended")
 
     closed = await db.sweep_stale_conversations()
     check("the abandoned one is swept", closed == 1, closed)
     check("STALE IS CLOSED", (await db.conversation("c_stale"))["closed_at"] is not None)
     check("fresh is left alone", (await db.conversation("c_fresh"))["closed_at"] is None)
+    check("A HUMAN STILL TALKING KEEPS IT OPEN",
+          (await db.conversation("c_attended"))["closed_at"] is None)
     check("the reason says what happened",
           "went quiet" in (await db.conversation("c_stale"))["closed_reason"])
     check("sweeping again closes nothing", await db.sweep_stale_conversations() == 0)
     counts = await db.conversation_counts(sid)
-    check("OPEN NOW MEANS OPEN", counts["open"] == 1, counts)
+    check("OPEN NOW MEANS OPEN", counts["open"] == 2, counts)
+
+    print("\nplain human messages stick to the live conversation")
+    check("sticky default is 5 minutes", bus_s["sticky_minutes"] == 5,
+          bus_s["sticky_minutes"])
+    check("recent activity captures",
+          await db.sticky_conversation(sid, 300) == "c_attended")
+    check("outside the window it does not",
+          await db.sticky_conversation(sid, 10) is None)
+    await db.record_observed(bus_id=sid, discord_id="sw2", channel_id="c6",
+                             thread_id=None, author_id="10", author_name="marlo",
+                             author_kind="agent", content="on it",
+                             created_at=time.time() - 5,
+                             conversation_id="c_fresh")
+    check("most recently active wins",
+          await db.sticky_conversation(sid, 300) == "c_fresh")
+    await db.close_conversation("c_fresh", "done")
+    check("CLOSED CONVERSATIONS NEVER CAPTURE",
+          await db.sticky_conversation(sid, 300) == "c_attended")
+    await db.close_conversation("c_attended", "done")
+    check("nothing open, nothing sticky",
+          await db.sticky_conversation(sid, 300) is None)
 
     print("\nreplies continue an exchange instead of starting one")
     bus_c = await db.create_bus(guild_id="g5", channel_id="c5", guild_name="R",

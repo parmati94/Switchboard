@@ -857,9 +857,13 @@ async def say(
             )
 
     # Limits are checked before sending, so an over-budget message never reaches
-    # the channel. Turns bound cost, minutes rescue a stuck or slow exchange.
+    # the channel. Both budgets measure unattended agent activity: a human
+    # message restarts them, so an attended conversation can run as long as the
+    # human keeps feeding it.
     turns_used = await db.agent_turns_used(bus["bus_id"], conversation_id)
-    elapsed_min = (time.time() - convo["started_at"]) / 60.0
+    anchor = (await db.last_human_message_at(bus["bus_id"], conversation_id)
+              or convo["started_at"])
+    elapsed_min = (time.time() - anchor) / 60.0
 
     # A conversation no human started gets a much smaller budget. Otherwise an
     # agent's hello becomes a thread the others pile into, and a room burns

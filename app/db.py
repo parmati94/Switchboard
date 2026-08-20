@@ -572,6 +572,7 @@ def _row_to_bus(row: aiosqlite.Row) -> dict:
         "mentions_enabled": bool(row["mentions_enabled"]),
         "mentions_mode": (row["mentions_mode"] if _has(row, "mentions_mode")
                           else DEFAULT_MENTION_MODE),
+        "sticky_minutes": row["sticky_minutes"] if _has(row, "sticky_minutes") else 5,
         "style": _style_for(row),
         # The raw stored overrides, as distinct from the effective values in
         # "style": max_chars there has already fallen back to the length preset,
@@ -696,6 +697,7 @@ class Database:
             ("limit_agent_turns", "INTEGER NOT NULL DEFAULT 6"),
             ("history_from_seq", "INTEGER NOT NULL DEFAULT 0"),
             ("mentions_mode", "TEXT NOT NULL DEFAULT 'participants'"),
+            ("sticky_minutes", "INTEGER NOT NULL DEFAULT 5"),
         ):
             if column not in bus_cols:
                 log.info("migrating buses: adding %s", column)
@@ -868,13 +870,13 @@ class Database:
             return (await cur.fetchone())["n"]
 
     async def set_bus_limits(
-        self, bus_id: str, turns: int, minutes: int, agent_turns: int
+        self, bus_id: str, turns: int, minutes: int, agent_turns: int, sticky: int
     ) -> None:
         assert self._conn
         await self._conn.execute(
-            "UPDATE buses SET limit_turns = ?, limit_minutes = ?, limit_agent_turns = ? "
-            "WHERE bus_id = ?",
-            (turns, minutes, agent_turns, bus_id),
+            "UPDATE buses SET limit_turns = ?, limit_minutes = ?, "
+            "limit_agent_turns = ?, sticky_minutes = ? WHERE bus_id = ?",
+            (turns, minutes, agent_turns, sticky, bus_id),
         )
         await self._conn.commit()
 
@@ -1066,18 +1068,55 @@ class Database:
             return {"total": row["total"] or 0, "open": row["open"] or 0}
 
     async def agent_turns_used(self, bus_id: str, conversation_id: str) -> int:
-        """Only agent messages consume budget.
+        """Agent turns since the last human message.
 
-        Human messages are free on purpose: the person in the channel is the
-        reset, not another consumer of it.
+        The budget bounds unattended agent activity, not the conversation's
+        total length — a human speaking restarts it. With no human message the
+        count is absolute, which is what caps a conversation agents started.
         """
         assert self._conn
         async with self._conn.execute(
             "SELECT COUNT(*) AS n FROM messages "
-            "WHERE bus_id = ? AND conversation_id = ? AND author_kind = 'agent'",
-            (bus_id, conversation_id),
+            "WHERE bus_id = ? AND conversation_id = ? AND author_kind = 'agent' "
+            "AND seq > COALESCE((SELECT MAX(seq) FROM messages "
+            "  WHERE bus_id = ? AND conversation_id = ? AND author_kind = 'human'), 0)",
+            (bus_id, conversation_id, bus_id, conversation_id),
         ) as cur:
             return (await cur.fetchone())["n"]
+
+    async def last_human_message_at(
+        self, bus_id: str, conversation_id: str
+    ) -> float | None:
+        """When a human last spoke in this conversation. Anchors the time limit."""
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT MAX(created_at) AS t FROM messages "
+            "WHERE bus_id = ? AND conversation_id = ? AND author_kind = 'human'",
+            (bus_id, conversation_id),
+        ) as cur:
+            return (await cur.fetchone())["t"]
+
+    async def sticky_conversation(self, bus_id: str, within_s: float) -> str | None:
+        """The open conversation a plain human message should continue, if any.
+
+        Most recently active open conversation, provided it saw traffic inside
+        the window. A Discord reply overrides this; silence ends it; a closed
+        conversation never captures. /switchboard reset closes everything open,
+        so a reset room cannot stick to a retired thread.
+        """
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT m.conversation_id AS cid, MAX(m.created_at) AS last_at "
+            "FROM messages m JOIN conversations c "
+            "  ON c.conversation_id = m.conversation_id "
+            "WHERE m.bus_id = ? AND c.closed_at IS NULL "
+            "GROUP BY m.conversation_id ORDER BY last_at DESC LIMIT 1",
+            (bus_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row and row["last_at"] and row["last_at"] >= time.time() - within_s:
+            return row["cid"]
+        return None
 
     # ---- agents ----------------------------------------------------------
 
@@ -1582,6 +1621,8 @@ class Database:
         conversations that ended without anyone noticing.
         """
         assert self._conn
+        # Anchored at the last human message, same as /say: the time limit
+        # measures unattended minutes, not conversation age.
         cur = await self._conn.execute(
             "UPDATE conversations SET closed_at = ?, "
             "closed_reason = 'went quiet past the time limit' "
@@ -1589,7 +1630,11 @@ class Database:
             "  SELECT c.conversation_id FROM conversations c "
             "  JOIN buses b ON b.bus_id = c.bus_id "
             "  WHERE c.closed_at IS NULL "
-            "    AND c.started_at < ? - (b.limit_minutes * 60))",
+            "    AND max(c.started_at, COALESCE("
+            "          (SELECT MAX(m.created_at) FROM messages m "
+            "           WHERE m.conversation_id = c.conversation_id "
+            "           AND m.author_kind = 'human'), 0)) "
+            "        < ? - (b.limit_minutes * 60))",
             (time.time(), time.time()),
         )
         closed = cur.rowcount

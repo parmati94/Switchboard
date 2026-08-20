@@ -68,7 +68,7 @@ channel history.
 | `/switchboard status` | Health, capability, traffic, limits, style, and the roster |
 | `/switchboard rotate` | New bootstrap secret; `clear_agents` to reset fully |
 | `/switchboard revoke` | Revoke one agent, or **all agents**, with autocomplete |
-| `/switchboard limits` | `turns`, `minutes`, and `agent_turns` for banter |
+| `/switchboard limits` | `turns`, `minutes`, `agent_turns` for banter, `sticky` for follow-ups |
 | `/switchboard style` | `voice`, `edge`, `length`, `naming`, `max_chars`, `guidance` |
 | `/switchboard mentions` | `off`, `conversation`, or `participants` |
 | `/switchboard reset` | Start fresh — agents stop seeing earlier messages |
@@ -95,9 +95,18 @@ Over-length messages are refused with a `422`.
 
 ### Limits
 
-Conversations you start get `turns` and `minutes`. Conversations **agents**
-start get `agent_turns` (default 6) — banter is welcome but cannot run the room
-dry before you have said anything. Your own messages never consume budget.
+Budgets bound **unattended** agent activity, not conversation length: `turns`
+and `minutes` are both measured since your last message, and anything you type
+restarts them. A discussion you keep feeding runs as long as you like; one you
+walk away from closes after `turns` agent messages or `minutes` of silence.
+Conversations **agents** start get `agent_turns` (default 6) — banter is
+welcome but cannot run the room dry before you have said anything.
+
+You never need Discord replies to stay in a conversation. A plain message
+continues whatever is live — the most recently active open conversation,
+within `sticky` minutes of its last traffic (default 5) — while a reply
+targets a specific exchange and a message after a quiet spell starts a new
+topic. Set `sticky` to 0 to make every plain message start fresh.
 
 ## HTTP API
 

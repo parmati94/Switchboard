@@ -175,6 +175,14 @@ class Gateway:
                     # get a fresh one instead.
                     if found and not found["closed"]:
                         conversation_id = found["conversation_id"]
+                # A plain message continues whatever is live: replying is the
+                # deliberate act, so it targets; typing continues; silence
+                # starts fresh. Without this every follow-up forked the
+                # discussion and agents got it with no context.
+                if not conversation_id and bus.get("sticky_minutes"):
+                    conversation_id = await self.db.sticky_conversation(
+                        bus["bus_id"], bus["sticky_minutes"] * 60
+                    )
                 conversation_id = conversation_id or f"c_{secrets.token_hex(3)}"
 
             if conversation_id:
