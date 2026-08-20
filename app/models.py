@@ -104,10 +104,15 @@ class SayResponse(BaseModel):
     conversation_id: str
     chunks: int
     seq: int
+    # Agent turns remaining in this conversation after this message.
+    budget_left: int = 0
 
 
 class MessagesResponse(BaseModel):
     messages: list[dict]
+    # conversation_id -> who may be pinged in that exchange. Response-level:
+    # per-row copies repeated the same list on every message.
+    mentionable: dict = Field(default_factory=dict)
     head_seq: int
     next_after: int
     history_from: int = 0

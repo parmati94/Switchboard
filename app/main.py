@@ -528,7 +528,9 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
             "recheck": "compare protocol_rev on every poll; if it changes, re-read /conduct",
             "address_with": "@name:",
             "kinds": list(KINDS),
-            "style": bus["style"],
+            # Labels and rev only: the agent just read the guidance prose on
+            # GET /, and the first poll re-serves it if not.
+            "style": style_summary(bus["style"]),
             "limits": {
                 "turns": bus["limit_turns"],
                 "minutes": bus["limit_minutes"],
@@ -537,6 +539,28 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
             },
         },
     )
+
+
+def visible_to(rows: list[dict], me: str, include_own: bool = False) -> list[dict]:
+    """Drop the caller's own messages: it already knows what it said, and
+    re-serving them cost every agent a full ingest cycle after each post."""
+    if include_own:
+        return rows
+    return [m for m in rows if not (m["from"] == me and m["author_kind"] == "agent")]
+
+
+def latest_mentionable_by_conversation(rows: list[dict]) -> dict:
+    """Strip per-row mentionable, keeping one stored value per conversation.
+
+    The join serves the conversation's current list on every row, so ten
+    messages carried ten identical copies.
+    """
+    stored: dict = {}
+    for row in rows:
+        value = row.pop("mentionable", None)
+        if row.get("conversation_id"):
+            stored[row["conversation_id"]] = value
+    return stored
 
 
 def _mark_self(agents: list[dict], me: str) -> list[dict]:
@@ -574,6 +598,13 @@ async def messages(
             "drop this parameter to get the full style back."
         ),
     ),
+    include_own: bool = Query(
+        False,
+        description=(
+            "Also return your own messages. Normally omitted — you already know "
+            "what you said — but useful to rebuild context after a compaction."
+        ),
+    ),
     wait: float = Query(
         DEFAULT_WAIT_S,
         ge=0,
@@ -586,20 +617,23 @@ async def messages(
     ),
     identity: tuple[dict, dict] = Depends(require_agent),
 ) -> MessagesResponse:
-    _, bus = identity
+    agent, bus = identity
     db = request.app.state.db
     notifier = request.app.state.notifier
+    me = agent["agent_id"]
 
-    async def read() -> list[dict]:
-        return await db.messages_after(
+    async def read() -> tuple[list[dict], list[dict]]:
+        raw = await db.messages_after(
             bus["bus_id"], after=after, limit=limit, conversation_id=conversation_id
         )
+        return raw, visible_to(raw, me, include_own)
 
-    rows = await read()
+    raw, rows = await read()
 
     # Long-poll: return the moment something lands, rather than making the agent
     # loop. The re-query cap closes the race where a message arrives between the
-    # read above and the wait below.
+    # read above and the wait below. The agent's own echo is not something new,
+    # so the wait continues through it.
     if not rows and wait:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait
@@ -608,7 +642,7 @@ async def messages(
             if remaining <= 0:
                 break
             await notifier.wait(bus["bus_id"], timeout=min(remaining, 5.0))
-            rows = await read()
+            raw, rows = await read()
 
         # Re-read the bus after waiting. Settings were loaded before the wait, so
         # a style or limit changed while an agent was blocked would arrive a full
@@ -618,27 +652,30 @@ async def messages(
         fresh = await db.bus_for_channel(bus["channel_id"])
         if fresh:
             bus = fresh
-    # Overlay the effective allowlist. Each row carries its own conversation's
-    # people from the join; in participants mode the bus's recent humans are
-    # merged in, once per request rather than once per row. Without this an agent
-    # would be permitted to ping someone it was never told about, and so never
-    # would.
+    # Resolve the effective allowlist once per conversation, not per row. In
+    # participants mode the bus's recent humans are merged in. Without this an
+    # agent would be permitted to ping someone it was never told about, and so
+    # never would.
+    mentionable = {}
     if rows:
         participants = (
             await db.recent_participants(bus["bus_id"])
             if (bus.get("mentions_mode") or DEFAULT_MENTION_MODE) == "participants"
             else []
         )
-        for row in rows:
-            row["mentionable"] = await db.mentionable_for(
-                bus, row.get("mentionable"), participants=participants
+        for cid, stored in latest_mentionable_by_conversation(rows).items():
+            mentionable[cid] = await db.mentionable_for(
+                bus, stored, participants=participants
             )
 
     stats = await db.bus_stats(bus["bus_id"])
     return MessagesResponse(
         messages=rows,
+        mentionable=mentionable,
         head_seq=stats["head_seq"],
-        next_after=rows[-1]["seq"] if rows else after,
+        # Past everything scanned, filtered echoes included, so a cursor never
+        # re-reads them.
+        next_after=raw[-1]["seq"] if raw else after,
         history_from=bus["history_from_seq"],
         protocol_rev=PROTOCOL_REV,
         # Labels always; prose only when the agent does not already hold it.
@@ -932,6 +969,7 @@ async def say(
         conversation_id=conversation_id,
         chunks=len(message_ids),
         seq=seq,
+        budget_left=budget_left,
     )
 
 

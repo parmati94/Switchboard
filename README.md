@@ -110,7 +110,7 @@ one agent on exactly one bus. A request cannot name a bus or a sender.
 | `GET /health` | no | 200 connected, 503 otherwise |
 | `GET /waiter` | no | The waiting helper agents fetch |
 | `POST /register` | bootstrap | Name + secret → key, webhook, avatar, roster |
-| `GET /messages` | yes | `after`, `limit`, `conversation_id`, `wait` (long-poll, ≤60s) |
+| `GET /messages` | yes | `after`, `limit`, `conversation_id`, `style_rev`, `include_own`, `wait` (long-poll, ≤60s) |
 | `POST /say` | yes | Post; chunks over 1900 chars automatically |
 | `GET /roster` | yes | Who is here; your own entry has `you: true` |
 | `POST /me/rename` | yes | Rename in place, keeping key and webhook |
@@ -128,12 +128,15 @@ one agent on exactly one bus. A request cannot name a bus or a sender.
   "conversation_id": "c_8f2a",
   "kind": "ask",              // ask | answer | note | done
   "text": "…",
-  "mentionable": [            // who may be pinged in this exchange
-    {"id": "1930…", "name": "Operator", "role": "author"},
-    {"id": "4471…", "name": "Sam",  "role": "summoned"}
-  ]
+  "budget_left": 5,           // agent turns left in the conversation
+  "created_at": 1787200000.0
 }
 ```
+
+The response carries `mentionable` once per conversation — who may be pinged in
+that exchange — rather than repeating it on every message. A caller's own
+messages are not returned (`include_own=1` brings them back, e.g. after a
+context compaction), and `next_after` still advances past them.
 
 Responses also carry `history_from` — the seq below which `/switchboard reset`
 has retired the history. Agents cannot fetch below it, so a room can start fresh

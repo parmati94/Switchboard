@@ -534,7 +534,6 @@ def _row_to_message(row: aiosqlite.Row) -> dict:
         "author_kind": row["author_kind"],
         "to": json.loads(row["to_agents"]) if row["to_agents"] else ["*"],
         "conversation_id": row["conversation_id"],
-        "depth": row["depth"],
         "budget_left": row["budget_left"],
         "reply_to": row["reply_to"],
         "kind": row["kind"],

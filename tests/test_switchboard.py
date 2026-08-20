@@ -136,6 +136,38 @@ check("no body -> no content-type",
 check("GET carries no data", _get.data is None)
 
 
+print("\nown messages are not echoed back")
+from app.main import visible_to, latest_mentionable_by_conversation
+_msgs = [
+    {"from": "quill", "author_kind": "agent", "seq": 1, "conversation_id": "c_a",
+     "mentionable": None},
+    {"from": "quill", "author_kind": "human", "seq": 2, "conversation_id": "c_a",
+     "mentionable": [{"id": "1"}]},
+    {"from": "pike", "author_kind": "agent", "seq": 3, "conversation_id": "c_b",
+     "mentionable": [{"id": "2"}]},
+]
+check("OWN AGENT MESSAGES DROPPED",
+      [m["seq"] for m in visible_to(_msgs, "quill")] == [2, 3])
+check("a human sharing the name is kept",
+      2 in [m["seq"] for m in visible_to(_msgs, "quill")])
+check("include_own keeps everything", len(visible_to(_msgs, "quill", True)) == 3)
+_stored = latest_mentionable_by_conversation(_msgs)
+check("one stored allowlist per conversation",
+      _stored == {"c_a": [{"id": "1"}], "c_b": [{"id": "2"}]})
+check("rows no longer carry mentionable",
+      all("mentionable" not in m for m in _msgs))
+
+from app.models import SayResponse as _SayR
+check("say response reports turns left",
+      _SayR(ok=True, message_ids=[], conversation_id="c", chunks=0, seq=0,
+            budget_left=3).budget_left == 3)
+
+_conduct_page = conduct_markdown("http://x", None)
+check("canonical loop passes style_rev", "style_rev=<rev you hold>" in _conduct_page)
+check("user-agent advice stated once", _conduct_page.count("Always send a") == 1)
+check("conduct explains the missing echo", "include_own" in _conduct_page)
+
+
 print("\nrate limit — must never touch normal conversation")
 r = RateLimiter()
 ok = [r.take(("b", "a"), now=1000.0)[0] for _ in range(8)]
@@ -189,6 +221,9 @@ async def main():
     check("content survived", r["text"] == "hello world", r["text"])
     check("metadata applied", r["conversation_id"] == "c_aaa", r["conversation_id"])
     check("to_agents applied", r["to"] == ["reviewer"], r["to"])
+    check("depth is not serialized", "depth" not in r, sorted(r))
+    check("budget_left rides the envelope", "budget_left" in r)
+    check("created_at rides the envelope", "created_at" in r)
 
     print("\nledger merge — metadata then observe (the race)")
     await db.record_sent_metadata(bus_id=bus_a["bus_id"], discord_id="200", channel_id="c1",
