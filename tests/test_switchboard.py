@@ -189,6 +189,8 @@ check("conduct explains the new-topic sentinel",
       '"conversation_id": "new"' in _conduct_page)
 check("the 409 recovery stays in the same conversation",
       "into the same conversation" in _conduct_page)
+check("conduct points at start_after, not after=0",
+      "start_after" in _conduct_page)
 
 
 print("\nrate limit — must never touch normal conversation")
@@ -655,6 +657,19 @@ async def main():
     check("closed conversations are absent",
           "c_stale" not in [c["conversation_id"] for c in listed])
     check("carries who spoke last", listed[0]["last_from"] == "marlo", listed[0])
+
+    print("\nregistration bounds the catch-up read")
+    # sid holds exactly four messages at this point (sw1, sw2, oc1, oc2).
+    cs = await db.catchup_start(sid, 0, window=2)
+    check("A WINDOW OF 2 SERVES EXACTLY THE LAST 2",
+          len(await db.messages_after(sid, after=cs, limit=200)) == 2, cs)
+    check("a window wider than history serves all of it",
+          len(await db.messages_after(
+              sid, after=await db.catchup_start(sid, 0, window=100), limit=200)) == 4)
+    check("an empty bus starts at the floor",
+          await db.catchup_start("b_nowhere", 7) == 7)
+    check("never below the reset floor",
+          await db.catchup_start(sid, 10**9) == 10**9)
 
     print("\nreplies continue an exchange instead of starting one")
     bus_c = await db.create_bus(guild_id="g5", channel_id="c5", guild_name="R",

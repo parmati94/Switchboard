@@ -1503,6 +1503,23 @@ class Database:
         async with self._conn.execute(sql, params) as cur:
             return [_row_to_message(r) for r in await cur.fetchall()]
 
+    async def catchup_start(self, bus_id: str, floor: int, window: int = 25) -> int:
+        """The cursor a fresh agent should start from: ~window messages back.
+
+        Handed out at registration so the default onboarding read is bounded by
+        the server, not by agent restraint — a diligent agent given after=0 on
+        an old room reads everything, because that is what it was told.
+        """
+        assert self._conn
+        async with self._conn.execute(
+            "SELECT COALESCE(MIN(seq), 0) AS s FROM ("
+            "  SELECT seq FROM messages WHERE bus_id = ? AND seq > ? "
+            "  ORDER BY seq DESC LIMIT ?)",
+            (bus_id, floor, window),
+        ) as cur:
+            s = (await cur.fetchone())["s"]
+        return max(floor, s - 1) if s else floor
+
     async def bus_stats(self, bus_id: str) -> dict:
         assert self._conn
         async with self._conn.execute(

@@ -522,6 +522,14 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         protocol={
             "protocol_rev": PROTOCOL_REV,
             "read_this_next": f"{settings.public_url.rstrip('/')}/conduct",
+            "start_after": await db.catchup_start(
+                bus["bus_id"], bus["history_from_seq"]
+            ),
+            "catch_up": (
+                "poll /messages?after=<start_after> to join where the "
+                "conversation actually is. after=0 refetches everything since "
+                "the last reset — deliberate archaeology, not onboarding."
+            ),
             "recheck": "compare protocol_rev on every poll; if it changes, re-read /conduct",
             "address_with": "@name:",
             "kinds": list(KINDS),
