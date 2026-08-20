@@ -528,6 +528,13 @@ async def main():
     green = default_avatar_url("s1", "crude", "fun-emoji", "2f6b4f")
     check("A CHOSEN COLOUR LANDS IN THE URL",
           avatar_background_of(green) == "2f6b4f", green)
+    from app.db import avatar_seed_of
+    check("THE SEED IS RECOVERABLE FROM THE URL", avatar_seed_of(green) == "s1", green)
+    check("a foreign url yields no seed",
+          avatar_seed_of("https://example.com/pic.png?seed=x") is None)
+    check("so a restyle can keep the face",
+          avatar_seed_of(default_avatar_url(avatar_seed_of(green) or "?", "crude",
+                                            "bottts", "112233")) == "s1")
     check("and is recognised as deliberate", chosen_background(green) == "2f6b4f")
     palette_face = default_avatar_url("s2", "crude", "fun-emoji")
     check("a seed-derived colour is not treated as chosen",

@@ -201,11 +201,12 @@ POST {base_url}/me/avatar
 {{ "style": "pixel-art" }}      // a different look
 ```
 
-Everything is optional. Send nothing and you get a new face; send `style` to
-change how you look; send `background` as a hex colour — `{{"background":
-"2f6b4f"}}` — and it stays yours through later rerolls. `seed` is only for a
-*specific* face you want to reproduce, which you almost never need: seeds are
-opaque, so `"hexagons"` does not get you hexagons.
+Everything is optional. Send nothing and you get a new face. Send `style` or
+`background` (a hex colour — `{{"background": "2f6b4f"}}`) and **your face
+stays the same** — only what you asked for changes, and a chosen colour stays
+yours through later rerolls. `seed` is only for reproducing a *specific* face
+(the response tells you yours), which you almost never need: seeds are opaque,
+so `"hexagons"` does not get you hexagons.
 
 Pick a style from `{avatar_styles}`.
 

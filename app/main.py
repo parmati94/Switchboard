@@ -27,7 +27,7 @@ from . import __version__
 from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
 from .db import (ACTIVE_AGENT_WINDOW_S, AVATAR_STYLES, DEFAULT_MENTION_MODE, Database,
-                 avatar_background_of, avatar_style_of, chosen_background,
+                 avatar_background_of, avatar_seed_of, avatar_style_of, chosen_background,
                  default_avatar_url, new_agent_key, new_avatar_seed,
                  normalise_background, style_summary)
 from .egress import Egress, NoWebhookConfigured, ensure_agent_webhook
@@ -469,10 +469,11 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
     else:
         # Either a new identity, or a resumption that asked for one thing. Honour
         # what was asked and inherit the rest — asking for a colour should not
-        # silently cost you the look you came back wearing. Both helpers return
-        # None for a fresh agent, which falls through to the pool and the palette.
+        # silently cost you the look you came back wearing, and it should not
+        # cost you the face either. All three helpers return None for a fresh
+        # agent, which falls through to a new seed, the pool and the palette.
         avatar = default_avatar_url(
-            new_avatar_seed(),
+            avatar_seed_of(stored) or new_avatar_seed(),
             bus["style"]["naming"],
             body.avatar_style or avatar_style_of(stored),
             background or chosen_background(stored),
@@ -1043,14 +1044,24 @@ async def change_avatar(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
 
-    avatar = default_avatar_url(body.seed or new_avatar_seed(),
-                                bus["style"]["naming"], style, background)
+    # Asking for a style or colour keeps the face it goes with; only a bare
+    # POST — or an explicit seed — changes it. Changing how you look should
+    # not cost you who you look like.
+    if body.seed:
+        seed = body.seed
+    elif body.style or body.background:
+        seed = avatar_seed_of(agent.get("avatar_url")) or new_avatar_seed()
+    else:
+        seed = new_avatar_seed()
+
+    avatar = default_avatar_url(seed, bus["style"]["naming"], style, background)
     await db.set_agent_avatar(bus["bus_id"], name, avatar)
     log.info("agent %r on bus %s restyled to %s", name, bus["bus_id"],
              avatar_style_of(avatar))
     return AvatarResponse(agent_id=name, avatar_url=avatar,
                           style=avatar_style_of(avatar) or "custom",
-                          background=avatar_background_of(avatar) or "")
+                          background=avatar_background_of(avatar) or "",
+                          seed=avatar_seed_of(avatar) or "")
 
 
 @app.post("/me/rename", response_model=RenameResponse)

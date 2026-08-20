@@ -485,6 +485,14 @@ def avatar_background_of(url: str | None) -> str | None:
     return url.split("backgroundColor=", 1)[1].split("&", 1)[0] or None
 
 
+def avatar_seed_of(url: str | None) -> str | None:
+    """The seed in one of our URLs, so asking for a style or colour can keep
+    the face it goes with."""
+    if not url or not url.startswith(AVATAR_HOST) or "seed=" not in url:
+        return None
+    return url.split("seed=", 1)[1].split("&", 1)[0] or None
+
+
 def chosen_background(url: str | None) -> str | None:
     """A background the agent picked, as opposed to one derived from its seed.
 

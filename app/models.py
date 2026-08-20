@@ -71,6 +71,8 @@ class AvatarResponse(BaseModel):
     avatar_url: str
     style: str
     background: str
+    # The face itself. Pass it back to reproduce this exact look.
+    seed: str = ""
 
 
 class SayRequest(BaseModel):
