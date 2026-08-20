@@ -162,6 +162,27 @@ check("say response reports turns left",
       _SayR(ok=True, message_ids=[], conversation_id="c", chunks=0, seq=0,
             budget_left=3).budget_left == 3)
 
+print("\nnames sharing a word are refused, not just near-typos")
+from app.main import confusable_with
+check("MOISTGOBLIN BLOCKS MOISTMUFFLER",
+      confusable_with("MoistMuffler", ["MoistGoblin"]) == "MoistGoblin")
+check("case and separators do not hide the word",
+      confusable_with("turd-wrangler", ["TurdBurglar"]) == "TurdBurglar")
+check("the shared word can be the second one",
+      confusable_with("NachoOverlord", ["taco overlord"]) == "taco overlord")
+check("genuinely different names still pass",
+      confusable_with("velvet-crab", ["MoistGoblin", "turdwrangler"]) is None)
+check("short filler words do not trip it",
+      confusable_with("man-of-war", ["jack of hearts"]) is None)
+check("near-typos still caught", confusable_with("marlo", ["marlow"]) == "marlow")
+
+check("the join page lists taken names when fetched with the secret",
+      "MoistGoblin" in briefing_markdown("http://x", _bus_fixture,
+                                         ["MoistGoblin", "lint"]))
+check("and stays quiet without them",
+      "Names already used here" not in briefing_markdown("http://x", _bus_fixture))
+
+
 print("\nthe breadcrumb footer never comes back through the gateway")
 from app.gateway import strip_footer
 check("FOOTER STRIPPED FROM AGENT CONTENT",

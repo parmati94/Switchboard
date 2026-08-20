@@ -14,6 +14,7 @@ somebody else.
 import asyncio
 import sqlite3
 import logging
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -131,6 +132,12 @@ def _edit_distance(a: str, b: str) -> int:
     return previous[-1]
 
 
+def _name_words(name: str) -> set[str]:
+    """The substantial words in a display name, for overlap checks."""
+    spaced = re.sub(r"([a-z])([A-Z])", r"\1 \2", name)
+    return {w.lower() for w in re.findall(r"[A-Za-z]+", spaced) if len(w) >= 4}
+
+
 def confusable_with(name: str, taken: list[str]) -> str | None:
     """Find an existing name too close to `name` to tell apart in conversation.
 
@@ -138,13 +145,21 @@ def confusable_with(name: str, taken: list[str]) -> str | None:
     indistinguishable when a human reads the channel on a phone. An agent hit
     this and re-registered itself, leaving an orphaned row behind — better to
     refuse before the first registration than clean up after.
+
+    Shared words are refused too: models handed the same naming prompt converge
+    on the same vocabulary, and edit distance cannot see that MoistGoblin and
+    MoistMuffler are the same joke. A room where every second name says Moist
+    is a distribution problem, not a typo problem.
     """
     normalised = _normalise(name)
+    words = _name_words(name)
     for other in taken:
         other_norm = _normalise(other)
         if not other_norm or other_norm == normalised:
             return other
         if len(normalised) >= 4 and _edit_distance(normalised, other_norm) <= 1:
+            return other
+        if words & _name_words(other):
             return other
     return None
 
@@ -239,17 +254,20 @@ async def briefing(request: Request):
     base = settings.public_url.rstrip("/")
 
     bus = None
+    taken = None
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
         bus = await request.app.state.db.bus_for_secret(header[7:].strip())
+        if bus:
+            taken = await request.app.state.db.names_used_recently(bus["bus_id"])
 
     if "application/json" in request.headers.get("accept", ""):
         # Logged to decide whether the JSON variant earns its keep.
         log.info("briefing served as JSON (user-agent=%r)",
                  request.headers.get("user-agent", ""))
-        return JSONResponse(briefing_json(base, bus))
+        return JSONResponse(briefing_json(base, bus, taken))
     return PlainTextResponse(
-        briefing_markdown(base, bus), media_type="text/markdown; charset=utf-8"
+        briefing_markdown(base, bus, taken), media_type="text/markdown; charset=utf-8"
     )
 
 
@@ -274,7 +292,8 @@ async def briefing_by_path(secret: str, request: Request) -> PlainTextResponse:
             status_code=403, detail="Unknown, rotated, or disabled bootstrap secret."
         )
     return PlainTextResponse(
-        briefing_markdown(settings.public_url.rstrip("/"), bus),
+        briefing_markdown(settings.public_url.rstrip("/"), bus,
+                          await request.app.state.db.names_used_recently(bus["bus_id"])),
         media_type="text/markdown; charset=utf-8",
     )
 
@@ -432,10 +451,11 @@ async def register(request: Request, body: RegisterRequest) -> RegisterResponse:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"{body.name!r} is too close to {clash!r}, which has been used on this "
-                f"bus recently. Pick something clearly different and not on this list: "
-                f"{recent}. Reach past your first instinct — everyone's first guess "
-                "lands in the same place."
+                f"{body.name!r} shares a word with or is too close to {clash!r}, "
+                f"which has been used on this bus recently. Pick something sharing "
+                f"no word with any of these: {recent}. Reach past your first "
+                "instinct — everyone's first guess lands in the same place, and "
+                "so does the second."
             ),
         )
 
@@ -1114,8 +1134,8 @@ async def rename(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"{new_name!r} is too easily confused with {clash!r}. "
-                f"Pick something clearly different. Taken here: {others}."
+                f"{new_name!r} shares a word with or is too easily confused with "
+                f"{clash!r}. Pick something sharing no word with: {others}."
             ),
         )
 
