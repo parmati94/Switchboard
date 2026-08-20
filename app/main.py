@@ -900,11 +900,11 @@ async def say(
             ),
         )
 
-    prior = await db.messages_after(
-        bus["bus_id"], after=0, limit=200, conversation_id=conversation_id
-    )
-    depth = len(prior) + 1
-    budget_left = max(0, turn_limit - turns_used - 1)
+    # Position in the current unattended run, so the footer's turn and its
+    # budget count on the same clock — a human message resets both, and the
+    # two always sum to the limit.
+    depth = turns_used + 1
+    budget_left = max(0, turn_limit - depth)
 
     # Who this agent may actually ping. Enforced on the wire, so an agent writing
     # <@someone-else> renders a mention that notifies nobody.
