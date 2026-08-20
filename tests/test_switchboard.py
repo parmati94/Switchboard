@@ -116,6 +116,26 @@ check("generic conduct says to re-fetch with the live key",
       "sb_live_" in conduct_markdown("http://x", None))
 
 
+print("\nwaiter passthrough builds the request, nothing more")
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("waiter", "/app/client/waiter.py")
+_waiter = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(_waiter)
+_req = _waiter.passthrough_request({"url": "http://x", "key": "sb_live_k"},
+                                   "POST", "/say", b'{"text": "hi"}')
+_h = {k.lower(): v for k, v in _req.header_items()}
+check("url is state url + path", _req.full_url == "http://x/say")
+check("method honoured", _req.get_method() == "POST")
+check("KEY COMES FROM THE STATE FILE", _h.get("authorization") == "Bearer sb_live_k")
+check("a real user-agent, not urllib's", "switchboard-waiter" in _h.get("user-agent", ""))
+check("json content-type when there is a body", _h.get("content-type") == "application/json")
+check("body passed verbatim", _req.data == b'{"text": "hi"}')
+_get = _waiter.passthrough_request({"url": "http://x", "key": "k"}, "GET", "/roster", None)
+check("no body -> no content-type",
+      "content-type" not in {k.lower() for k, _ in _get.header_items()})
+check("GET carries no data", _get.data is None)
+
+
 print("\nrate limit — must never touch normal conversation")
 r = RateLimiter()
 ok = [r.take(("b", "a"), now=1000.0)[0] for _ in range(8)]

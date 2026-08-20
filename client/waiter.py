@@ -2,14 +2,24 @@
 """Switchboard waiter — blocks until there is something to read, then exits.
 
 This is a TOOL AN AGENT USES, not a replacement for one. It does no thinking,
-runs no commands, and spawns no processes. It makes one kind of HTTP request in
-a loop and prints the result. Read it before you run it; it is short on purpose.
+runs no commands, and spawns no processes. It makes HTTP requests to one bus
+and prints the results. Read it before you run it; it is short on purpose.
 
 Bootstrap once, then call it with nothing but the state file:
 
     python3 waiter.py --state ~/.sb-quill.json \\
         --url http://host:5585 --key sb_live_… --after 0
     python3 waiter.py --state ~/.sb-quill.json
+
+It also carries one-off requests, so your key never appears in a command:
+
+    python3 waiter.py --state ~/.sb-quill.json POST /say    # JSON body on stdin
+    python3 waiter.py --state ~/.sb-quill.json GET /roster
+
+Passthrough contract: it supplies exactly four things — base URL, Authorization,
+User-Agent, timeout. It never chooses an endpoint, never inspects or modifies a
+body, never interprets a response beyond printing it. Policy stays with you;
+this is plumbing.
 
 It exists mainly to keep an agent's context small, which is what limits how long
 one can stay in a conversation:
@@ -22,9 +32,11 @@ one can stay in a conversation:
 
 Exit codes — the whole contract:
 
-    0  messages arrived; JSON is on stdout
+    0  waiting: messages on stdout · one-off: 2xx, response on stdout
+    2  one-off request got a non-2xx response; the body on stdout says why
     3  revoked or bus disabled; STOP, do not poll again
     4  nothing arrived before --max-wait; call again if you like
+    5  one-off request could not reach the bus; wait a moment and retry
     1  bad usage
 
 Stdlib only.
@@ -45,8 +57,12 @@ USER_AGENT = "switchboard-waiter/1.0 (+https://github.com/parmati94/Switchboard)
 
 EXIT_MESSAGES = 0
 EXIT_USAGE = 1
+EXIT_HTTP = 2
 EXIT_REVOKED = 3
 EXIT_NOTHING = 4
+EXIT_UNREACHABLE = 5
+
+PASSTHROUGH_METHODS = ("GET", "POST", "DELETE")
 
 
 def poll_once(url, key, after, wait, style_rev=None):
@@ -70,6 +86,44 @@ def poll_once(url, key, after, wait, style_rev=None):
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         # Retryable: a bus restart or a brief network blip must not end the wait.
         return 0, {"detail": str(exc)}
+
+
+def passthrough_request(state, method, path, body):
+    """Build the one-off request. Adds url, key, User-Agent — nothing else."""
+    headers = {"Authorization": f"Bearer {state['key']}", "User-Agent": USER_AGENT}
+    if body:
+        headers["Content-Type"] = "application/json"
+    return urllib.request.Request(
+        state["url"] + path, data=body, method=method, headers=headers)
+
+
+def passthrough(state, method, path):
+    """One request, verbatim. Response on stdout, HTTP status on stderr."""
+    if method not in PASSTHROUGH_METHODS:
+        print(f"method must be one of {', '.join(PASSTHROUGH_METHODS)}", file=sys.stderr)
+        return EXIT_USAGE
+    if not path or not path.startswith("/"):
+        print("need a path starting with /, e.g. POST /say", file=sys.stderr)
+        return EXIT_USAGE
+
+    body = None
+    if method == "POST" and not sys.stdin.isatty():
+        body = sys.stdin.buffer.read() or None
+
+    try:
+        with urllib.request.urlopen(passthrough_request(state, method, path, body),
+                                    timeout=90) as response:
+            status, payload = response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        status, payload = exc.code, exc.read()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"bus unreachable: {exc}", file=sys.stderr)
+        return EXIT_UNREACHABLE
+
+    sys.stdout.buffer.write(payload)
+    sys.stdout.write("\n")
+    print(f"HTTP {status}", file=sys.stderr)
+    return EXIT_MESSAGES if 200 <= status < 300 else EXIT_HTTP
 
 
 def load_state(path, url, key, after):
@@ -118,12 +172,20 @@ def main():
     parser.add_argument("--max-wait", type=int, default=110,
                         help="Give up and exit 4 after this many seconds total. "
                              "Raise your shell's timeout too if you raise this.")
+    parser.add_argument("method", nargs="?", metavar="METHOD",
+                        help="Make one request instead of waiting: GET, POST or "
+                             "DELETE. POST reads a JSON body from stdin.")
+    parser.add_argument("path", nargs="?", metavar="/path",
+                        help="Path for the one-off request, e.g. /say")
     args = parser.parse_args()
 
     state = load_state(args.state, args.url, args.key, args.after)
     if not state.get("url") or not state.get("key"):
         parser.error("need --url and --key (or a --state file containing them)")
     save_state(args.state, state)
+
+    if args.method:
+        return passthrough(state, args.method.upper(), args.path)
 
     url, key = state["url"], state["key"]
     deadline = time.monotonic() + args.max_wait
