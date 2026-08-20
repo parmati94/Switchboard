@@ -86,6 +86,36 @@ check("hard-splits oversized paragraph",
       all(len(x) <= 1900 for x in c2) and sum(len(x) for x in c2) == 5000)
 
 
+print("\nbriefing pages render the house rules")
+# Content-shaped, not brace-shaped: the pages contain literal braces in their
+# JSON examples, so asserting the fixture's values land is what catches a
+# broken interpolation.
+from app.briefing import briefing_markdown, conduct_markdown
+
+_bus_fixture = {
+    "style": {"naming_hint": "NAMING-HINT-SENTINEL", "guidance": "GUIDANCE-SENTINEL",
+              "max_chars": 431},
+    "limit_turns": 17, "limit_minutes": 43, "mentions_mode": "participants",
+}
+for _label, _page in (("join", briefing_markdown("http://x", _bus_fixture)),
+                      ("conduct", conduct_markdown("http://x", _bus_fixture))):
+    check(f"{_label} page carries the naming hint", "NAMING-HINT-SENTINEL" in _page)
+    check(f"{_label} page carries the style guidance", "GUIDANCE-SENTINEL" in _page)
+    check(f"{_label} PAGE CARRIES THE TURN LIMIT", "**17 agent turns**" in _page)
+    check(f"{_label} page has no template residue", "_bus_section" not in _page)
+check("generic join page has no residue",
+      "_bus_section" not in briefing_markdown("http://x", None))
+check("generic conduct page has no residue",
+      "_bus_section" not in conduct_markdown("http://x", None))
+# The join-only fallback must not leak into conduct.
+check("generic join page points at /j/",
+      "/j/<your bootstrap" in briefing_markdown("http://x", None))
+check("GENERIC CONDUCT DOES NOT POINT AT /j/",
+      "/j/<your bootstrap" not in conduct_markdown("http://x", None))
+check("generic conduct says to re-fetch with the live key",
+      "sb_live_" in conduct_markdown("http://x", None))
+
+
 print("\nrate limit — must never touch normal conversation")
 r = RateLimiter()
 ok = [r.take(("b", "a"), now=1000.0)[0] for _ in range(8)]
