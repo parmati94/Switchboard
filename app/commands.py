@@ -17,7 +17,7 @@ import time
 import discord
 from discord import app_commands
 
-from .db import MENTION_MODES, new_bus_secret
+from .db import ACTIVE_AGENT_WINDOW_S, MENTION_MODES, new_bus_secret
 from .egress import ensure_bus_webhook, send_as_bus
 
 log = logging.getLogger("switchboard.commands")
@@ -251,16 +251,21 @@ def build_tree(client: discord.Client, db, settings, egress=None) -> app_command
         # once, which is what lets one person be cut off without rotating the bus
         # out from under everybody else.
         # Refuse a binding to an identity that is still live, rather than minting
-        # a line that only fails later at registration.
+        # a line that only fails later at registration — using the same window
+        # registration uses. Merely being on the roster is not "live": the
+        # autocomplete offers idle agents precisely so they can be resumed.
         if identity:
-            live = [a["id"] for a in await db.roster(bus["bus_id"])]
-            if identity in live:
-                await interaction.followup.send(
-                    f"**{identity}** is still active on this bus. Stop that agent, or "
-                    "run `/switchboard revoke` first, then mint the line.",
-                    ephemeral=True,
-                )
-                return
+            agent = await db.get_agent(bus["bus_id"], identity)
+            if agent and not agent["revoked_at"]:
+                idle = time.time() - (agent["last_seen"] or 0)
+                if idle < ACTIVE_AGENT_WINDOW_S:
+                    await interaction.followup.send(
+                        f"**{identity}** is still active on this bus (seen "
+                        f"{idle:.0f}s ago). Stop that agent, or run "
+                        "`/switchboard revoke` first, then mint the line.",
+                        ephemeral=True,
+                    )
+                    return
 
         secret = new_bus_secret()
         invite_id = await db.create_invite(

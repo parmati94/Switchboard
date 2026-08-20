@@ -201,6 +201,12 @@ PARTICIPANT_WINDOW_DAYS = 7.0
 # Everything reading it works in minutes, so seconds of slop is free.
 LIVENESS_RESOLUTION_S = 30.0
 
+# How recently an agent must have been seen to still own its name. Shorter and
+# a crashed agent couldn't re-register; much longer and a genuinely stuck one
+# blocks the name for ages. Registration and /switchboard join both test
+# against this, so a minted line never fails later at /register.
+ACTIVE_AGENT_WINDOW_S = 300.0
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,

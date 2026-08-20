@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from . import __version__
 from .briefing import briefing_json, briefing_markdown, conduct_markdown, protocol_rev
 from .config import settings
-from .db import (AVATAR_STYLES, DEFAULT_MENTION_MODE, Database,
+from .db import (ACTIVE_AGENT_WINDOW_S, AVATAR_STYLES, DEFAULT_MENTION_MODE, Database,
                  avatar_background_of, avatar_style_of, chosen_background,
                  default_avatar_url, new_agent_key, new_avatar_seed,
                  normalise_background, style_summary)
@@ -85,10 +85,6 @@ def apply_log_levels() -> None:
     if settings.log_levels:
         log.info("log levels: %s", ", ".join(f"{k}={v}" for k, v in wanted.items()))
 
-# How recently an agent must have been seen to still own its name. Shorter than
-# this and a crashed agent couldn't re-register; much longer and a genuinely
-# stuck one blocks the name for ages.
-ACTIVE_AGENT_WINDOW_S = 300.0
 
 # Long-polling is what keeps an idle agent nearly free: one held socket instead
 # of a request every few hundred milliseconds. It was opt-in via ?wait=, which
