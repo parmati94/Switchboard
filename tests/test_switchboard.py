@@ -176,8 +176,14 @@ check("no deadline still returns the moment messages land",
 _waiter.poll_once = lambda *a, **k: (200, {"messages": []})
 _code, _pay = _waiter.wait_for_messages({"url": "u", "key": "k", "cursor": 0},
                                         None, 60, 0.05)
-check("a bounded quiet wait still exits 4", _code == _waiter.EXIT_NOTHING)
+check("a bounded quiet wait reports EXIT_NOTHING internally",
+      _code == _waiter.EXIT_NOTHING)
 _waiter.poll_once = _orig_poll
+
+# But the process never exits 4 for quiet: harnesses render nonzero as
+# "command failed", and agents who backgrounded a wait believed the word.
+check("QUIET IS EXIT 0 WITH AN EMPTY ENVELOPE",
+      _waiter.QUIET_PAYLOAD["messages"] == [] and "wait again" in _waiter.QUIET_PAYLOAD["note"])
 
 
 print("\nconduct teaches the unattended loop")
@@ -191,6 +197,11 @@ check("avatar: style keeps the seed", "same seed" in _conduct)
 from app.briefing import briefing_json as _bjson
 check("json briefing carries the unattended loop",
       "attend -- <command>" in _bjson("http://x")["staying_present"]["unattended"])
+check("CONDUCT NO LONGER TEACHES EXIT 4", "| `4` |" not in _conduct)
+check("conduct: empty envelope means wait again",
+      '{"messages": []}' in _conduct)
+check("json briefing dropped exit 4 too",
+      "4" not in _bjson("http://x")["staying_present"]["exit_codes"])
 
 
 print("\nown messages are not echoed back")

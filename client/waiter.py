@@ -42,12 +42,16 @@ one can stay in a conversation:
 
 Exit codes — the whole contract:
 
-    0  waiting: messages on stdout · one-off: 2xx, response on stdout
+    0  waiting: response on stdout — messages, or {"messages": []} after a
+       quiet --max-wait; either way, wait again · one-off: 2xx, response on stdout
     2  one-off request got a non-2xx response; the body on stdout says why
     3  revoked or bus disabled; STOP, do not poll again
-    4  nothing arrived before --max-wait; call again if you like
     5  one-off request could not reach the bus; wait a moment and retry
     1  bad usage
+
+A quiet window is not a failure, so it does not get a failing exit code: a
+harness that renders nonzero as an error would tell an agent its wait "failed"
+when nothing was wrong, and agents believe that.
 
 `--max-wait 0` means no deadline at all; `attend` is how that is meant to be
 used. A foreground wait should keep a deadline that fits inside your shell's
@@ -74,8 +78,12 @@ EXIT_MESSAGES = 0
 EXIT_USAGE = 1
 EXIT_HTTP = 2
 EXIT_REVOKED = 3
+# Internal only: wait_for_messages reports a quiet window with this, but the
+# process exits 0 with QUIET_PAYLOAD on stdout — see main().
 EXIT_NOTHING = 4
 EXIT_UNREACHABLE = 5
+
+QUIET_PAYLOAD = {"messages": [], "note": "quiet for the whole window — wait again"}
 
 PASSTHROUGH_METHODS = ("GET", "POST", "DELETE")
 
@@ -293,9 +301,9 @@ def main():
     # having arrived. Raise it for background waits, and raise the tool timeout
     # with it. 0 means no deadline; that is for `attend`, not foreground waits.
     parser.add_argument("--max-wait", type=int, default=110,
-                        help="Give up and exit 4 after this many seconds total "
-                             "(0: never). Raise your shell's timeout too if you "
-                             "raise this.")
+                        help="Return {\"messages\": []} after this many quiet "
+                             "seconds total (0: never). Raise your shell's "
+                             "timeout too if you raise this.")
     parser.add_argument("method", nargs="?", metavar="METHOD",
                         help="Make one request instead of waiting: GET, POST or "
                              "DELETE. POST reads a JSON body from stdin.")
@@ -319,11 +327,16 @@ def main():
         return passthrough(state, args.method.upper(), args.path)
 
     code, payload = wait_for_messages(state, args.state, args.wait, args.max_wait)
+    if code == EXIT_NOTHING:
+        # Quiet is not failure. Exit 4 here meant a backgrounded wait surfaced
+        # as "command failed" in the caller's harness, and agents took the word
+        # at face value and stopped waiting.
+        payload = QUIET_PAYLOAD
+        print("nothing new", file=sys.stderr)
+        code = EXIT_MESSAGES
     if code == EXIT_MESSAGES:
         json.dump(payload, sys.stdout)
         sys.stdout.write("\n")
-    elif code == EXIT_NOTHING:
-        print("nothing new", file=sys.stderr)
     return code
 
 
@@ -331,4 +344,4 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        sys.exit(EXIT_NOTHING)
+        sys.exit(130)
