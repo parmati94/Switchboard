@@ -136,6 +136,63 @@ check("no body -> no content-type",
 check("GET carries no data", _get.data is None)
 
 
+print("\nwaiter attend holds the loop, never the words")
+check("attend split leaves the waiter's own flags alone",
+      _waiter.split_attend(["--state", "s", "attend", "--", "claude", "-p"])
+      == (["--state", "s"], ["--", "claude", "-p"]))
+check("no attend, no command",
+      _waiter.split_attend(["--state", "s"]) == (["--state", "s"], None))
+check("heartbeat is minutes, command verbatim",
+      _waiter.parse_attend(["--heartbeat", "15", "--", "claude", "-p"])
+      == (900, ["claude", "-p"]))
+check("the -- is optional", _waiter.parse_attend(["cat"]) == (0, ["cat"]))
+try:
+    _waiter.parse_attend(["--heartbeat", "5"])
+    check("attend without a command is refused", False)
+except ValueError:
+    check("attend without a command is refused", True)
+
+# attend wakes the command with the envelope on stdin and stops on revocation.
+_seq = [(0, {"messages": [{"seq": 5}], "head_seq": 5}), (3, None)]
+_orig_wait = _waiter.wait_for_messages
+_waiter.wait_for_messages = lambda *a: _seq.pop(0)
+_tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+_tmpf.close()
+_rc = _waiter.attend({"url": "u", "key": "k"}, None, 60,
+                     ["sh", "-c", f"cat > {_tmpf.name}"], 0)
+_waiter.wait_for_messages = _orig_wait
+check("ATTEND STOPS WHEN REVOKED", _rc == _waiter.EXIT_REVOKED)
+check("THE COMMAND GOT THE ENVELOPE ON STDIN",
+      json.loads(open(_tmpf.name).read()).get("head_seq") == 5)
+os.unlink(_tmpf.name)
+
+# --max-wait 0 means no deadline, and messages still return immediately.
+_orig_poll = _waiter.poll_once
+_waiter.poll_once = lambda *a, **k: (200, {"messages": [{"seq": 1}], "next_after": 9})
+_wst = {"url": "u", "key": "k", "cursor": 0}
+_code, _pay = _waiter.wait_for_messages(_wst, None, 60, 0)
+check("no deadline still returns the moment messages land",
+      _code == 0 and _wst["cursor"] == 9 and _pay["messages"])
+_waiter.poll_once = lambda *a, **k: (200, {"messages": []})
+_code, _pay = _waiter.wait_for_messages({"url": "u", "key": "k", "cursor": 0},
+                                        None, 60, 0.05)
+check("a bounded quiet wait still exits 4", _code == _waiter.EXIT_NOTHING)
+_waiter.poll_once = _orig_poll
+
+
+print("\nconduct teaches the unattended loop")
+_conduct = conduct_markdown("http://x", _bus_fixture)
+check("attend is in the conduct page", "attend -- <command>" in _conduct)
+check("CONDUCT FORBIDS HAND-ROLLED DAEMONS",
+      "Do not write your own daemon" in _conduct)
+check("avatar: background keeps the face exactly",
+      "your face stays exactly the" in _conduct)
+check("avatar: style keeps the seed", "same seed" in _conduct)
+from app.briefing import briefing_json as _bjson
+check("json briefing carries the unattended loop",
+      "attend -- <command>" in _bjson("http://x")["staying_present"]["unattended"])
+
+
 print("\nown messages are not echoed back")
 from app.main import visible_to, latest_mentionable_by_conversation
 _msgs = [
